@@ -1,0 +1,36 @@
+#!/bin/sh
+# Render every song of every corpus file through the JS library and through
+# the Java port, and compare the float output sample for sample.
+#   sh tests/run.sh [FILES...]
+JS=${JS:-../microtone-taudplay}
+# Current V8 computes Math.pow with the platform's libm (std::pow) unless told
+# --no-use-std-math-pow, which keeps its own fdlibm pow — the one this library
+# carries. Older Node has no such flag and computes fdlibm's anyway.
+NODE=${NODE:-node}
+$NODE --no-use-std-math-pow -e 0 2>/dev/null && NODE="$NODE --no-use-std-math-pow"
+JAVA=${JAVA:-java}
+TAUDPLAY=${TAUDPLAY:-"$JAVA -jar build/taudplay.jar"}
+COMPARE="$JAVA -cp build/tests net.torvald.taudplay.Compare"
+SECONDS_MAX=${SECONDS_MAX:-900}
+OUT=${OUT:-tests/out}
+mkdir -p "$OUT"
+[ $# -gt 0 ] || set -- "$JS"/test/corpus/*.taud
+fail=0
+for f in "$@"; do
+  n=$($TAUDPLAY "$f" | grep -c '^  \[')
+  s=0
+  while [ "$s" -lt "$n" ]; do
+    for mode in fold binaural; do
+      b=$(basename "$f" .taud | tr ' ' _)
+      ref="$OUT/$b.$s.$mode.ref.f32"; got="$OUT/$b.$s.$mode.java.f32"
+      extra=""; [ "$mode" = binaural ] && extra="--binaural"
+      $NODE tests/ref_render.mjs "$JS" "$f" "$s" "$SECONDS_MAX" "$ref" $mode 2>/dev/null || { echo "$b song $s ($mode): JS render failed"; fail=1; continue; }
+      $TAUDPLAY "$f" -s "$s" -t "$SECONDS_MAX" --raw "$got" $extra 2>/dev/null
+      printf '%s song %s (%s):' "$b" "$s" "$mode"
+      $COMPARE "$ref" "$got" || fail=1
+      rm -f "$ref" "$got"
+    done
+    s=$((s + 1))
+  done
+done
+exit $fail
