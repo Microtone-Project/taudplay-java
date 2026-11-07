@@ -17,7 +17,7 @@ import static net.torvald.taudplay.C.*;
 final class Engine {
     /* Rate-derived configuration (setSamplingRate). */
     final int rate;
-    int rampOutSamples, volRampSamples, attackRampSamples;
+    int rampOutSamples, volRampSamples, attackRampSamples, sfFilterGlideSamples;
     double a500B1, a500A0, ledA1, ledA2, ledB1, ledB2;
 
     /* The sample pool, BORROWED from the parsed document and trimmed to its
@@ -106,6 +106,12 @@ final class Engine {
     /* The frame accumulators the buses join (mixAccL/R): a span's frames are
      * finished only once every bus has run over it. */
     final double[] accL = new double[TRACKER_CHUNK], accR = new double[TRACKER_CHUNK];
+    /* The song's global, mixing and master volumes as the mixer glides them
+     * (Sampler.ByteGlide), and each frame's combined gain, which the buses read. */
+    final Sampler.ByteGlide gvolGlide = new Sampler.ByteGlide();
+    final Sampler.ByteGlide mvolGlide = new Sampler.ByteGlide();
+    final Sampler.ByteGlide masterGlide = new Sampler.ByteGlide();
+    final double[] gainSpan = new double[TRACKER_CHUNK];
 
     /* Scratch (the C's stack locals and out-parameters). */
     final Envelope.PfBox pfBox = new Envelope.PfBox();
@@ -447,7 +453,11 @@ final class Engine {
         finePatternDelayExtra = 0;
         pendingInterrupts = 0;
         java.util.Arrays.fill(interruptArgs, 0);
-        for (int i = 0; i < MAX_VOICES; i++) voices[i].active = false;
+        /* A play starts AT its levels: nothing glides in from the last one. */
+        for (int i = 0; i < MAX_VOICES; i++) { voices[i].active = false; voices[i].faderCur = Double.NaN; }
+        gvolGlide.cur = Double.NaN;
+        mvolGlide.cur = Double.NaN;
+        masterGlide.cur = Double.NaN;
         for (int i = 0; i < bgCount; i++) bg[i] = null;
         bgCount = 0;
         if (mastering != null) mastering.reset();
@@ -570,6 +580,8 @@ final class Engine {
         rampOutSamples = (int) JsMath.round(RAMP_OUT_SEC * rate);
         volRampSamples = (int) JsMath.round(VOL_RAMP_SEC * rate);
         attackRampSamples = (int) JsMath.round(ATTACK_RAMP_SEC * rate);
+        sfFilterGlideSamples = (int) JsMath.round(SF_FILTER_GLIDE_SEC * rate);
+        if (sfFilterGlideSamples < 1) sfFilterGlideSamples = 1;
         if (volRampSamples < 1) volRampSamples = 1;
         if (attackRampSamples < 1) attackRampSamples = 1;
         if (rampOutSamples < 1) rampOutSamples = 1;

@@ -26,7 +26,7 @@ package net.torvald.taudplay;
 
 public final class TaudPlayer {
     /** The library's version. */
-    public static final String VERSION = "4.7.4";
+    public static final String VERSION = "4.8.1";
     /** Frames per rendered block. Tick and row timing are per SAMPLE, so this
      *  is pure batching granularity and never changes what a song sounds like. */
     public static final int CHUNK = C.TAUD_CHUNK;
@@ -237,7 +237,7 @@ public final class TaudPlayer {
          * does not consult the envelope's P bit. */
         double effEnvVol = voice.volEnvOn ? voice.envVolMix : 1.0;
         double faderGain = (255 - voice.fader) / 255.0;
-        double ev = effEnvVol * voice.fadeoutVolume * voice.currentMixVolume * faderGain;
+        double ev = effEnvVol * voice.fadeoutMix * voice.currentMixVolume * faderGain;
         return ev < 0 ? 0 : ev > 1 ? 1 : ev;
     }
 

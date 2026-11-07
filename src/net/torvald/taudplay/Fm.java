@@ -98,11 +98,12 @@ final class Fm {
         double g = rig.gain[k];
         if (k != 0) {
             s = Filter.applyVoiceFilterSelf(v, s);
+            Filter.advanceFilterGlide(e, v);
             v.envVolMix += v.envVolStep;
             double effEnvVol = v.hasVolEnv && v.volEnvOn ? v.envVolMix : 1.0;
             Sampler.advanceVolumeRamp(e, v, e.volDiv);
             Sampler.advancePitchRamp(e, v, spt);
-            g *= effEnvVol * v.fadeoutVolume * v.activeAttenGain * (inst.instGlobalVolume / 255.0);
+            g *= effEnvVol * Sampler.advanceFadeout(v) * v.activeAttenGain * (inst.instGlobalVolume / 255.0);
             if (v.rampOutSamples > 0) {
                 g *= v.rampOutGain;
                 v.rampOutGain -= v.rampOutStep;

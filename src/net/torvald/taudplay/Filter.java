@@ -14,6 +14,51 @@ import static net.torvald.taudplay.C.*;
 final class Filter {
     private Filter() {}
 
+    /** RBJ cookbook low-pass, normalised to a0; SF2 §2.01 p.59 1/√Q gain-norm. */
+    private static void sfBiquad(Engine e, Voice v, double fres, double qLin) {
+        final double pi = 3.141592653589793;
+        double omega = (2.0 * pi * fres) / e.rate;
+        double sinC = JsMath.sin(omega);
+        double cosC = JsMath.cos(omega);
+        double alpha = sinC / (2.0 * qLin);
+        double a0inv = 1.0 / (1.0 + alpha);
+        double gain = a0inv / Math.sqrt(qLin);
+        v.filterBqB1 = (1.0 - cosC) * gain;
+        v.filterBqB02 = v.filterBqB1 * 0.5;
+        v.filterBqA1 = -2.0 * cosC * a0inv;
+        v.filterBqA2 = (1.0 - alpha) * a0inv;
+    }
+
+    /** Forget a SoundFont-mode glide: the filter is off, or in IT mode. */
+    private static void stopSfGlide(Voice v) {
+        v.sfCents = Double.NaN;
+        v.sfCentsLeft = 0;
+        v.sfQLeft = 0;
+    }
+
+    /** One frame of a SoundFont-mode filter glide, after every channel of the
+     *  frame has been filtered (filter.js advanceFilterGlide). */
+    static void advanceFilterGlide(Engine e, Voice v) {
+        if (v.sfCentsLeft == 0 && v.sfQLeft == 0) return;
+        if (v.sfCentsLeft > 0) {
+            v.sfCents += v.sfCentsIncr;
+            v.sfCentsLeft--;
+        }
+        if (v.sfQLeft > 0) {
+            v.sfQLeft--;
+            v.sfQ = v.sfQLeft == 0 ? v.sfQAim : v.sfQ + v.sfQIncr;
+        }
+        if (v.sfCentsLeft == 0 && v.sfQLeft == 0) {
+            v.sfCents = v.sfCentsAim;
+            sfBiquad(e, v, v.sfHzAim, v.sfQAim);
+            return;
+        }
+        double hz = v.sfCentsLeft == 0
+            ? v.sfHzAim
+            : dmin(dmax(8.176 * JsMath.pow(2.0, v.sfCents / 1200.0), 5.0), 0.45 * e.rate);
+        sfBiquad(e, v, hz, v.sfQ);
+    }
+
     static void refreshVoiceFilter(Engine e, Voice v) {
         final double pi = 3.141592653589793;
         int cut = v.currentCutoff;
@@ -25,26 +70,49 @@ final class Filter {
         v.filterResonanceCached = res;
 
         if (v.filterSfMode) {
-            if (cut >= 0xffff) { v.filterActive = false; return; }
+            if (cut >= 0xffff) { v.filterActive = false; stopSfGlide(v); return; }
             double fres = dmin(dmax(8.176 * JsMath.pow(2.0, cut / 1200.0), 5.0), 0.45 * rate);
             int qcb = res >= 0xffff ? 0 : res;
             double qDb = dmin(dmax(qcb / 10.0, 0.0), 96.0) - 3.01;
             double qLin = dmax(JsMath.pow(10.0, qDb / 20.0), 0.001);
-            double omega = (2.0 * pi * fres) / rate;
-            double sinC = JsMath.sin(omega);
-            double cosC = JsMath.cos(omega);
-            double alpha = sinC / (2.0 * qLin);
-            double a0inv = 1.0 / (1.0 + alpha);
-            double gain = a0inv / Math.sqrt(qLin);
-            v.filterBqB1 = (1.0 - cosC) * gain;
-            v.filterBqB02 = v.filterBqB1 * 0.5;
-            v.filterBqA1 = -2.0 * cosC * a0inv;
-            v.filterBqA2 = (1.0 - alpha) * a0inv;
+            /* The coefficients follow a new cutoff / Q a sample at a time
+             * (advanceFilterGlide), as FluidSynth's do; a voice's first
+             * refresh, and one that turns the biquad on, lands at once. The
+             * glide runs in the cutoff's own cents (no logarithm) and is
+             * clamped as Hz at every step. */
+            boolean fresh = Double.isNaN(v.sfCents) || !v.filterActive || !v.filterIsBiquad;
+            v.sfHzAim = fres;
+            v.sfCentsAim = cut;
             v.filterIsBiquad = true;
             v.filterActive = true;
+            if (fresh) {
+                v.sfCents = cut;
+                v.sfQ = qLin;
+                v.sfQAim = qLin;
+                v.sfCentsLeft = 0;
+                v.sfQLeft = 0;
+                sfBiquad(e, v, fres, qLin);
+                return;
+            }
+            if (qLin != v.sfQAim) {
+                v.sfQAim = qLin;
+                v.sfQIncr = (qLin - v.sfQ) / e.sfFilterGlideSamples;
+                v.sfQLeft = e.sfFilterGlideSamples;
+            }
+            double diff = cut - v.sfCents;
+            if (Math.abs(diff) > 1.0) {
+                double count = e.sfFilterGlideSamples * dmin(dmax(v.sfQ, 1.0), 5.0);
+                v.sfCentsIncr = diff / count;
+                v.sfCentsLeft = (int) JsMath.round(count);
+            } else {
+                v.sfCents = cut;
+                v.sfCentsLeft = 0;
+            }
+            if (v.sfCentsLeft == 0 && v.sfQLeft == 0) sfBiquad(e, v, fres, qLin);
             return;
         }
 
+        stopSfGlide(v);
         if (iclamp(cut, 0, 255) >= 255) { v.filterActive = false; return; }
         double itCutoff = iclamp(cut, 0, 254) * 0.5;
         double itResonance = res >= 255 ? 0.0 : iclamp(res, 0, 254) * 0.5;

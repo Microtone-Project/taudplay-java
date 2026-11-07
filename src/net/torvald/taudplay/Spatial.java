@@ -272,7 +272,7 @@ final class Spatial {
 
     private static double displayWeight(Voice v) {
         double env = v.hasVolEnv && v.volEnvOn ? v.envVolMix : 1.0;
-        return env * v.fadeoutVolume * v.currentMixVolume * v.layerMixGain * ((255 - v.fader) / 255.0);
+        return env * v.fadeoutMix * v.currentMixVolume * v.layerMixGain * ((255 - v.fader) / 255.0);
     }
 
     /** The stereo pan the meters show for lane `vi`: the mix-weighted mean of
@@ -302,7 +302,8 @@ final class Spatial {
         int nc = bus.numChannels;
         int chans = v.activeChanCount == 2 ? 2 : 1;
         double az = v.currentPan;
-        double el = voiceElevation(v);
+        /* …and the ramped elevation (advanceElevRamp), for the same reason. */
+        double el = Double.isNaN(v.elevCur) ? voiceElevation(v) : v.elevCur;
         if (!sc.valid || sc.az != az || sc.el != el || sc.chans != chans || sc.rendererGen != e.rendererGen) {
             double[] ang = e.angBox;
             for (int k = 0; k < chans; k++) {

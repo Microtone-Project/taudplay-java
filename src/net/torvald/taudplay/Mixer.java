@@ -30,6 +30,7 @@ final class Mixer {
             s = Filter.applyTaudVoiceFx(v, s, null);
             out[0] = s;
             out[1] = s;
+            Filter.advanceFilterGlide(e, v);
             return;
         }
         /* An OPL channel (item 209) replaces the sample fetch, reading the
@@ -40,6 +41,7 @@ final class Mixer {
             s = Filter.applyTaudVoiceFx(v, s, null);
             out[0] = s;
             out[1] = s;
+            Filter.advanceFilterGlide(e, v);
             return;
         }
         /* A PSG pair (§7.9) on the same chip clock. Unlike OPL it leaves the
@@ -51,6 +53,7 @@ final class Mixer {
             s = Filter.applyTaudVoiceFx(v, s, null);
             out[0] = s;
             out[1] = s;
+            Filter.advanceFilterGlide(e, v);
             return;
         }
         /* A formant voice (item 212) plays its sample — or the chip channel it
@@ -61,6 +64,7 @@ final class Mixer {
             s = Filter.applyTaudVoiceFx(v, s, null);
             out[0] = s;
             out[1] = s;
+            Filter.advanceFilterGlide(e, v);
             return;
         }
         if (v.activeChanCount != 2) {
@@ -69,6 +73,7 @@ final class Mixer {
             s = Filter.applyTaudVoiceFx(v, s, null);
             out[0] = s;
             out[1] = s;
+            Filter.advanceFilterGlide(e, v);
             return;
         }
         Sampler.fetchTrackerSampleStereo(e, v, inst, interpMode, out);
@@ -81,6 +86,8 @@ final class Mixer {
         }
         out[0] = Filter.applyTaudVoiceFx(v, Filter.applyVoiceFilterSelf(v, c0), null);
         out[1] = Filter.applyTaudVoiceFx(v, Filter.applyVoiceFilter(v, c1, v.right), v.right);
+        /* Once per frame, after both channels: they share the coefficients. */
+        Filter.advanceFilterGlide(e, v);
     }
 
     /* ── pcm32fToPcm8: noise-shaped TPDF dither, binary32 at every step ── */
@@ -145,8 +152,9 @@ final class Mixer {
      * by the song's global gain, in ascending slot order (runImixBuses). A bus
      * whose chain is idle and was not fed is skipped outright. Each bus is
      * then left clear for the next span. */
-    private static void runImixBuses(Engine e, int n0, int n1, double globalGain) {
+    private static void runImixBuses(Engine e, int n0, int n1) {
         SpatialBus spatial = e.spatial;
+        double[] gainSpan = e.gainSpan;
         for (int b = 0; b < e.imixCount; b++) {
             Imix.Bus bus = e.imixList[b];
             Imix.Chain chain = bus.chain;
@@ -163,13 +171,13 @@ final class Mixer {
                 chain.process(d, TRACKER_CHUNK, n0, n1, e.bpm, bus.fed);
                 if (spatial == null) {
                     for (int n = n0; n < n1; n++) {
-                        e.accL[n] += d[n] * globalGain;
-                        e.accR[n] += d[TRACKER_CHUNK + n] * globalGain;
+                        e.accL[n] += d[n] * gainSpan[n];
+                        e.accR[n] += d[TRACKER_CHUNK + n] * gainSpan[n];
                     }
                 } else {
                     for (int c = 0; c < bus.nch; c++) {
                         int o = c * TRACKER_CHUNK;
-                        for (int n = n0; n < n1; n++) spatial.data[o + n] += d[o + n] * globalGain;
+                        for (int n = n0; n < n1; n++) spatial.data[o + n] += d[o + n] * gainSpan[n];
                     }
                 }
             }
@@ -185,11 +193,7 @@ final class Mixer {
      * and filter state. */
     private static void finishSpan(Engine e, int n0, int n1) {
         SpatialBus spatial = e.spatial;
-        if (e.imixCount > 0) {
-            double gvol = e.globalVolume / 255.0;
-            double mvol = e.mixingVolume / 255.0;
-            runImixBuses(e, n0, n1, (gvol * mvol * e.masterVolume) / 255.0);
-        }
+        if (e.imixCount > 0) runImixBuses(e, n0, n1);
         double[] pair = e.pairBox;
         for (int n = n0; n < n1; n++) {
             double mixL, mixR;
@@ -290,16 +294,26 @@ final class Mixer {
                 while (e.psgQuarter < q) { e.psgQuarter++; Tick.psgQuarterPass(e); }
             }
 
-            double gvol = e.globalVolume / 255.0;
-            double mvol = e.mixingVolume / 255.0;
-            double globalGain = (gvol * mvol * e.masterVolume) / 255.0;
+            /* The song-level gains glide to a new value over the volume ramp
+             * (ByteGlide); held still they are the very numbers they always were. */
+            double gvol = e.gvolGlide.next(e, e.globalVolume) / 255.0;
+            double mvol = e.mvolGlide.next(e, e.mixingVolume) / 255.0;
+            double master = e.masterGlide.next(e, e.masterVolume) / 1.0;
+            double globalGain = (gvol * mvol * master) / 255.0;
+            e.gainSpan[n] = globalGain;
             e.accL[n] = 0.0;
             e.accR[n] = 0.0;
 
             for (int vi = 0; vi < MAX_VOICES; vi++) {
                 Voice voice = e.voices[vi];
                 double lGain = 0.0, rGain = 0.0, rampGain;
-                if (!voice.active || voice.fader == 255) continue;
+                if (!voice.active || Double.isNaN(voice.faderCur)) {
+                    /* Nothing sounding (or nothing glided yet): the fader is
+                     * where the host put it. */
+                    voice.faderCur = voice.fader; voice.faderAim = voice.fader; voice.faderLeft = 0;
+                }
+                /* Muted, and the fader's glide down has finished: frozen. */
+                if (!voice.active || (voice.fader == 255 && voice.faderCur == 255)) continue;
                 Inst inst = e.instruments[voice.instrumentId];
                 Tick.advanceSampleModExtended(e, voice, spt);
                 renderVoicePair(e, voice, inst, e.interpolationMode, spt, pair, n);
@@ -311,12 +325,13 @@ final class Mixer {
                 double effEnvVol = voice.hasVolEnv && voice.volEnvOn ? voice.envVolMix : 1.0;
                 Sampler.advanceVolumeRamp(e, voice, e.volDiv);
                 Sampler.advancePitchRamp(e, voice, spt);
-                double faderGain = (255 - voice.fader) / 255.0;
+                double fade = Sampler.advanceFadeout(voice);
+                double faderGain = (255 - Sampler.advanceFaderRamp(e, voice, voice.fader)) / 255.0;
                 /* An OPL voice took its note volume into the operators —
                  * unless the chip is operator 0 of a rack, which reads it at
                  * unity and leaves the note's volume to the finished patch
                  * (§5.5.1). */
-                double perVoiceGain = effEnvVol * voice.fadeoutVolume *
+                double perVoiceGain = effEnvVol * fade *
                     (voice.opl != null && voice.fmRig == null ? 1.0 : voice.currentMixVolume) *
                     swingScale * instGv * faderGain * voice.layerMixGain * voice.activeAttenGain;
                 double vol = perVoiceGain * globalGain;
@@ -331,6 +346,7 @@ final class Mixer {
                     rGain = voice.panLawR;
                 } else {
                     Sampler.advancePanRamp(e, voice, Spatial.voiceAzimuth(voice), true);
+                    Sampler.advanceElevRamp(e, voice, Spatial.voiceElevation(voice));
                 }
                 if (voice.rampOutSamples > 0) {
                     rampGain = voice.rampOutGain;
@@ -378,7 +394,9 @@ final class Mixer {
                 if (bg.fmOperator) continue;
                 Voice srcVoice = bg.sourceChannel >= 0 && bg.sourceChannel < MAX_VOICES ? e.voices[bg.sourceChannel] : null;
                 int bgFader = srcVoice != null && srcVoice.fader > bg.fader ? srcVoice.fader : bg.fader;
-                if (!bg.active || bgFader == 255) continue;
+                if (!bg.active) continue;
+                if (Double.isNaN(bg.faderCur)) { bg.faderCur = bgFader; bg.faderAim = bgFader; bg.faderLeft = 0; }
+                if (bgFader == 255 && bg.faderCur == 255) continue; /* muted, glide finished */
                 Inst inst = e.instruments[bg.instrumentId];
                 if (bg.isLayerChild) Tick.advanceSampleModExtended(e, bg, spt);
                 renderVoicePair(e, bg, inst, e.interpolationMode, spt, pair, n);
@@ -390,11 +408,12 @@ final class Mixer {
                 double effEnvVol = bg.hasVolEnv && bg.volEnvOn ? bg.envVolMix : 1.0;
                 Sampler.advanceVolumeRamp(e, bg, e.volDiv);
                 Sampler.advancePitchRamp(e, bg, spt);
-                double faderGain = (255 - bgFader) / 255.0;
-                double vol = (effEnvVol * bg.fadeoutVolume *
+                double fade = Sampler.advanceFadeout(bg);
+                double faderGain = (255 - Sampler.advanceFaderRamp(e, bg, bgFader)) / 255.0;
+                double vol = (effEnvVol * fade *
                               (bg.opl != null && bg.fmRig == null ? 1.0 : bg.currentMixVolume) *
                               swingScale * gvol * mvol * instGv * faderGain * bg.layerMixGain * bg.activeAttenGain *
-                              e.masterVolume) / 255.0;
+                              master) / 255.0;
                 if (spatial == null) {
                     double pan = Sampler.advancePanRamp(e, bg, Spatial.voicePanByte(bg), false);
                     if (pan != bg.panLawPan) {
@@ -406,6 +425,7 @@ final class Mixer {
                     rGain = bg.panLawR;
                 } else {
                     Sampler.advancePanRamp(e, bg, Spatial.voiceAzimuth(bg), true);
+                    Sampler.advanceElevRamp(e, bg, Spatial.voiceElevation(bg));
                 }
                 if (bg.rampOutSamples > 0) {
                     rampGain = bg.rampOutGain;
@@ -422,7 +442,7 @@ final class Mixer {
                 Imix.Bus route = voiceRoute(e, bg);
                 if (route != null) {
                     /* The same chain without the three song-level gains the bus is ahead of. */
-                    double bvol = effEnvVol * bg.fadeoutVolume *
+                    double bvol = effEnvVol * fade *
                         (bg.opl != null && bg.fmRig == null ? 1.0 : bg.currentMixVolume) *
                         swingScale * instGv * faderGain * bg.layerMixGain * bg.activeAttenGain;
                     route.fed = true;

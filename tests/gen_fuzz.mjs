@@ -384,6 +384,12 @@ const s9Arg = () => pick([0x9000 | ri(0, 3), 0x9000 | ri(0, 3), 0x9010 | ri(0, 3
   0x9100 | ri(0, 0xff), 0x9100 | ri(0, 20), 0x9100, 0x9000 | ri(0, 0xfff)]);
 // FUZZ_S9=1 makes it half of every effect column command, on far more rows.
 const denseS9 = process.env.FUZZ_S9 === "1";
+// FUZZ_CUTS=1 does the same for S $70…$76 — the past-note actions (S $70 cuts
+// the lane's ghosts, which must ramp out) and the New Note Action overrides
+// (S $73 on a layered note cuts every layer on the next one). With
+// FUZZ_INSTS=layered the notes are the layered metas and plain samples.
+const denseCuts = process.env.FUZZ_CUTS === "1";
+const cutArg = () => pick([0x7000, 0x7000, 0x7000, 0x7100, 0x7200, 0x7300, 0x7300, 0x7300, 0x7400, 0x7500, 0x7600]);
 const EFFECTS = [
   [0x01, () => (pick([0, 1, 2, 4, 8, 12, 16, 20, 5, 9]) << 8)],
   [0x02, () => ri(0, 0xffff)], [0x03, () => ri(0, 0xffff)],
@@ -447,6 +453,7 @@ const instChoices = process.env.FUZZ_INSTS === "opl" ? oplInsts
   : process.env.FUZZ_INSTS === "psg" ? psgInsts
   : process.env.FUZZ_INSTS === "formant" ? formantInsts
   : process.env.FUZZ_INSTS === "fm" ? [40, 41, 42, 43]
+  : process.env.FUZZ_INSTS === "layered" ? [30, 31, 32, 33, 30, 31, 32, 33, ...sampleInsts]
   : [...sampleInsts, 30, 31, 32, 33, 34, 35, 40, 41, 42, 43, ...oplInsts, ...oplInsts, ...psgInsts, ...psgInsts,
     ...formantInsts, ...formantInsts];
 
@@ -564,8 +571,9 @@ function makePattern() {
     w16(p, o, note);
     p[o + 2] = inst;
     const volEff = chance(0.6) ? 0 : ri(1, 3);
-    const hasFx = chance(denseS9 ? 0.8 : 0.45);
-    const [op, argf] = !hasFx ? [0, () => 0] : denseS9 && chance(0.5) ? [0x1c, s9Arg] : pick(EFFECTS);
+    const hasFx = chance(denseS9 || denseCuts ? 0.8 : 0.45);
+    const [op, argf] = !hasFx ? [0, () => 0] : denseS9 && chance(0.5) ? [0x1c, s9Arg]
+      : denseCuts && chance(0.5) ? [0x1c, cutArg] : pick(EFFECTS);
     const arg = hasFx ? argf() : 0;
     if (!wide) {
       p[o + 3] = (chance(0.5) ? ri(0, 63) : 0) | ((chance(0.5) ? 3 : volEff) << 6);

@@ -442,4 +442,71 @@ final class Sampler {
             v.currentMixVolume += v.volRampStep;
         }
     }
+
+    /** Per-sample fadeout glide (sampler.js advanceFadeout): walk fadeoutMix
+     *  down the slope the tick set, never below the tick's own multiplier —
+     *  where the glide ends, and what makes a reset to 1 land at once. */
+    static double advanceFadeout(Voice v) {
+        double m = v.fadeoutMix + v.fadeoutMixStep;
+        v.fadeoutMix = m > v.fadeoutVolume ? m : v.fadeoutVolume;
+        return v.fadeoutMix;
+    }
+
+    /** A level the host or the song sets outright, walked to its new value
+     *  over the volume ramp (sampler.js ByteGlide); byte units, cur NaN = snap. */
+    static final class ByteGlide {
+        double cur = Double.NaN, aim, step;
+        int left;
+
+        /** One frame of the glide (ByteGlide.fill, a frame at a time). */
+        double next(Engine e, int target) {
+            if (Double.isNaN(cur)) { cur = target; aim = target; left = 0; }
+            if (target != aim) {
+                aim = target;
+                step = (target - cur) / e.volRampSamples;
+                left = e.volRampSamples;
+            }
+            if (left > 0) {
+                left--;
+                cur = left == 0 ? target : cur + step;
+            }
+            return cur;
+        }
+    }
+
+    /** Per-sample glide of a voice's lane fader (sampler.js advanceFaderRamp). */
+    static double advanceFaderRamp(Engine e, Voice v, int target) {
+        if (Double.isNaN(v.faderCur)) {
+            v.faderCur = target; v.faderAim = target; v.faderLeft = 0;
+            return target;
+        }
+        if (target != v.faderAim) {
+            v.faderAim = target;
+            v.faderStep = (target - v.faderCur) / e.volRampSamples;
+            v.faderLeft = e.volRampSamples;
+        }
+        if (v.faderLeft > 0) {
+            v.faderLeft--;
+            v.faderCur = v.faderLeft == 0 ? target : v.faderCur + v.faderStep;
+        }
+        return v.faderCur;
+    }
+
+    /** Per-sample glide of a voice's elevation (sampler.js advanceElevRamp). */
+    static double advanceElevRamp(Engine e, Voice v, double target) {
+        if (Double.isNaN(v.elevCur)) {
+            v.elevCur = target; v.elevAim = target; v.elevLeft = 0;
+            return target;
+        }
+        if (target != v.elevAim) {
+            v.elevAim = target;
+            v.elevStep = (target - v.elevCur) / e.volRampSamples;
+            v.elevLeft = e.volRampSamples;
+        }
+        if (v.elevLeft > 0) {
+            v.elevLeft--;
+            v.elevCur = v.elevLeft == 0 ? target : v.elevCur + v.elevStep;
+        }
+        return v.elevCur;
+    }
 }

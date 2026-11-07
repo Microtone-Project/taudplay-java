@@ -100,6 +100,8 @@ final class Row {
         v.keyOff = false;
         v.noteFading = false;
         v.fadeoutVolume = 1.0;
+        v.fadeoutMix = 1.0;
+        v.fadeoutMixStep = 0.0;
         if (!reAttack) return;
         if (!(mayCarry && Envelope.envCarry(v.activeVolEnvLoop))) {
             v.envIndex = 0;

@@ -129,6 +129,12 @@ final class Voice {
     double envFilterTimeSec, envFilterValue = 0.5;
 
     double fadeoutVolume = 1.0;
+    /* fadeoutVolume as the mixer glides it across the tick (advanceFadeout). */
+    double fadeoutMix = 1.0, fadeoutMixStep;
+    /* The lane fader and the elevation as the mixer glides them
+     * (Sampler.advanceFaderRamp / advanceElevRamp); NaN = snap next sample. */
+    double faderCur = Double.NaN, faderStep; int faderAim, faderLeft;
+    double elevCur = Double.NaN, elevAim, elevStep; int elevLeft;
     int rampOutSamples;
     double rampOutGain, rampOutStep;
     int attackRampSamples;
@@ -164,6 +170,11 @@ final class Voice {
     boolean filterIsBiquad;
     double filterBqB02, filterBqB1, filterBqA1, filterBqA2, filterX1, filterX2;
     int filterCutoffCached = -1, filterResonanceCached = -1;
+    /* SoundFont-mode filter glide (Filter.advanceFilterGlide): cutoff in cents
+     * and Q where they stand, per-sample steps, samples left, the refresh's
+     * targets. sfCents NaN = the next refresh lands at once. */
+    double sfCents = Double.NaN, sfCentsIncr, sfHzAim, sfQ, sfQIncr, sfQAim;
+    int sfCentsLeft, sfCentsAim, sfQLeft;
 
     int randomVolBias, randomPanBias;
 

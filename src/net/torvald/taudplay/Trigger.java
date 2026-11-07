@@ -143,26 +143,65 @@ final class Trigger {
         return volMax == 0xff ? dnv : (dnv * 63 + 127) / 255;
     }
 
+    /** Drop bg[idx] on the spot — and, for a ghosted rack, its operands too. */
+    private static void dropBackgroundVoice(Engine e, int idx) {
+        Voice culled = e.bg[idx];
+        culled.active = false;
+        e.bgRemoveAt(idx);
+        if (culled.fmRig != null) {
+            for (int i = e.bgCount - 1; i >= 0; i--) {
+                Voice bg = e.bg[i];
+                if (!bg.fmOperator || bg.fmParent != culled) continue;
+                bg.active = false;
+                bg.fmOperator = false;
+                bg.fmParent = null;
+                bg.isLayerChild = false;
+                e.bgRemoveAt(i);
+            }
+        }
+    }
+
+    /** Already on its way out: no longer counts towards the cap. */
+    private static boolean bgLeaving(Voice v) {
+        return !v.active || v.rampOutSamples > 0 ||
+            (v.fmOperator && v.fmParent != null && v.fmParent.rampOutSamples > 0);
+    }
+
+    /** Cap the pool at MAX_BG_VOICES SOUNDING voices (trigger.js
+     *  capBackgroundVoices): the evicted voice is ramped out, not dropped; a
+     *  hard drop only past twice the cap. */
     static void capBackgroundVoices(Engine e) {
-        while (e.bgCount > MAX_BG_VOICES) {
+        int live = 0;
+        for (int i = 0; i < e.bgCount; i++) if (!bgLeaving(e.bg[i])) live++;
+        while (live > MAX_BG_VOICES) {
+            int idx = -1;
+            for (int i = 0; i < e.bgCount; i++) {
+                Voice v = e.bg[i];
+                if (!bgLeaving(v) && !v.isLayerChild && !v.fmOperator) { idx = i; break; }
+            }
+            if (idx < 0) for (int i = 0; i < e.bgCount; i++) if (!bgLeaving(e.bg[i]) && !e.bg[i].fmOperator) { idx = i; break; }
+            if (idx < 0) for (int i = 0; i < e.bgCount; i++) if (!bgLeaving(e.bg[i])) { idx = i; break; }
+            Voice culled = e.bg[idx];
+            if (culled.fmOperator) {
+                dropBackgroundVoice(e, idx);
+                live--;
+                continue;
+            }
+            Sampler.startCutRamp(e, culled);
+            live--;
+            if (culled.fmRig != null) {
+                for (int i = 0; i < e.bgCount; i++) {
+                    Voice bg = e.bg[i];
+                    if (bg.fmOperator && bg.fmParent == culled && bg.active) live--;
+                }
+            }
+        }
+        while (e.bgCount > 2 * MAX_BG_VOICES) {
             int idx = -1;
             for (int i = 0; i < e.bgCount; i++) if (!e.bg[i].isLayerChild && !e.bg[i].fmOperator) { idx = i; break; }
             if (idx < 0) for (int i = 0; i < e.bgCount; i++) if (!e.bg[i].fmOperator) { idx = i; break; }
             if (idx < 0) idx = 0;
-            Voice culled = e.bg[idx];
-            culled.active = false;
-            e.bgRemoveAt(idx);
-            if (culled.fmRig != null) {
-                for (int i = e.bgCount - 1; i >= 0; i--) {
-                    Voice bg = e.bg[i];
-                    if (!bg.fmOperator || bg.fmParent != culled) continue;
-                    bg.active = false;
-                    bg.fmOperator = false;
-                    bg.fmParent = null;
-                    bg.isLayerChild = false;
-                    e.bgRemoveAt(i);
-                }
-            }
+            dropBackgroundVoice(e, idx);
         }
     }
 
@@ -180,7 +219,7 @@ final class Trigger {
             case 4:
                 if (!bg.keyOff) { bg.keyOff = true; Envelope.applyKeyLift(bg, e.instruments[bg.instrumentId]); }
                 break;
-            case 1: bg.active = false; break;
+            case 1: Sampler.startCutRamp(e, bg); break; /* ramped out, as layer 0's ghost is */
             case 3: bg.noteFading = true; break;
             default: break;
             }
@@ -466,6 +505,8 @@ final class Trigger {
             voice.envFilterTimeSec = box.time;
         }
         voice.fadeoutVolume = 1.0;
+        voice.fadeoutMix = 1.0;
+        voice.fadeoutMixStep = 0.0;
         voice.rampOutSamples = 0;
         voice.rampOutGain = 0.0;
         /* Not on an OPL or PSG voice: its attack IS the chip's envelope. */
@@ -517,6 +558,7 @@ final class Trigger {
         voice.filterY1 = 0.0; voice.filterY2 = 0.0; voice.filterX1 = 0.0; voice.filterX2 = 0.0;
         voice.filterCutoffCached = -1;
         voice.filterResonanceCached = -1;
+        voice.sfCents = Double.NaN; voice.sfCentsLeft = 0; voice.sfQLeft = 0; /* a new note's filter lands at once */
         voice.noteVal = noteVal;
         voice.basePitch = noteVal;
         voice.renderPitch = noteVal;
@@ -531,6 +573,10 @@ final class Trigger {
         voice.volRampStep = 0.0;
         voice.snapPlaybackRate = true;
         voice.snapPan = true;
+        /* …and at its lane's fader and elevation: a fresh note has no
+         * waveform for a jump to click in. */
+        voice.elevCur = Double.NaN;
+        voice.faderCur = Double.NaN;
         voice.noteWasCut = false;
         voice.noteFading = false;
         voice.nnaOverride = -1;
@@ -588,9 +634,11 @@ final class Trigger {
     private static boolean isDuplicate(Engine e, Voice v, DupKey k, boolean bare) {
         Inst existInst = e.instruments[v.instrumentId];
         Inst newInst = e.instruments[k.newInstId];
-        /* A formant voice already into its coda, or ramping out, is no
-         * duplicate: what the check ends is the VOWEL. */
-        if (v.formant != null && (v.formant.phase >= PHASE_CODA || v.rampOutSamples > 0)) return false;
+        /* A voice already ramping out is already gone; a formant voice
+         * already into its coda is no duplicate: what the check ends is the
+         * VOWEL. */
+        if (v.rampOutSamples > 0) return false;
+        if (v.formant != null && v.formant.phase >= PHASE_CODA) return false;
         if (bare && existInst.dupCheckType() != DCT_LANE) return false;
         switch (existInst.dupCheckType()) {
         case 1: return v.noteVal == k.newNote && v.instrumentId == k.newInstId;
@@ -611,16 +659,15 @@ final class Trigger {
     private static void applyDupAction(Engine e, Voice v, boolean isFg, int channel) {
         Inst existInst = e.instruments[v.instrumentId];
         switch (existInst.dupCheckAction()) {
-        case 0:
-            if (v.formant != null) {
-                /* Ramped out over the incoming note's attack: the foreground
-                 * voice through a ghost, since the note is about to reuse it. */
-                Voice r = isFg ? ghostRig(e, v, channel) : v;
-                if (r != null) Sampler.startCutRamp(e, r);
-                if (isFg) { v.active = false; capBackgroundVoices(e); }
-                break;
-            }
-            v.fadeoutVolume = 0.0; v.active = false; break;
+        case 0: {
+            /* Ramped out over the incoming note's attack — the foreground
+             * voice through a ghost, since the note is about to reuse it — as
+             * a New Note Action's cut is. */
+            Voice r = isFg ? ghostRig(e, v, channel) : v;
+            if (r != null) Sampler.startCutRamp(e, r);
+            if (isFg) { v.active = false; capBackgroundVoices(e); }
+            break;
+        }
         case 1: v.keyOff = true; Envelope.applyKeyLift(v, existInst); break;
         case 2: v.noteFading = true; break;
         default: break;
@@ -663,6 +710,10 @@ final class Trigger {
         Voice v = new Voice();
         v.active = true;
         v.fader = src.fader;
+        v.faderCur = src.faderCur; v.faderAim = src.faderAim;
+        v.faderStep = src.faderStep; v.faderLeft = src.faderLeft;
+        v.elevCur = src.elevCur; v.elevAim = src.elevAim;
+        v.elevStep = src.elevStep; v.elevLeft = src.elevLeft;
         v.instrumentId = src.instrumentId;
         v.displayInst = src.displayInst;
         v.samplePos = src.samplePos;
@@ -705,6 +756,8 @@ final class Trigger {
         v.envFilterTimeSec = src.envFilterTimeSec;
         v.envFilterValue = src.envFilterValue;
         v.fadeoutVolume = src.fadeoutVolume;
+        v.fadeoutMix = src.fadeoutMix;
+        v.fadeoutMixStep = src.fadeoutMixStep;
         v.autoVibPhase = src.autoVibPhase;
         v.autoVibTicksSinceTrigger = src.autoVibTicksSinceTrigger;
         v.currentCutoff = src.currentCutoff;
@@ -725,6 +778,9 @@ final class Trigger {
         v.filterX2 = src.filterX2;
         v.filterCutoffCached = src.filterCutoffCached;
         v.filterResonanceCached = src.filterResonanceCached;
+        v.sfCents = src.sfCents; v.sfCentsIncr = src.sfCentsIncr; v.sfCentsLeft = src.sfCentsLeft;
+        v.sfCentsAim = src.sfCentsAim; v.sfHzAim = src.sfHzAim; v.sfQ = src.sfQ;
+        v.sfQIncr = src.sfQIncr; v.sfQLeft = src.sfQLeft; v.sfQAim = src.sfQAim;
         v.randomVolBias = src.randomVolBias;
         v.randomPanBias = src.randomPanBias;
         v.panbrelloOffset = src.panbrelloOffset;
@@ -898,8 +954,10 @@ final class Trigger {
     static void applyPastNoteAction(Engine e, int channel, int action) {
         switch (action) {
         case 0:
-            for (int i = e.bgCount - 1; i >= 0; i--) {
-                if (e.bg[i].sourceChannel == channel) e.bgRemoveAt(i);
+            /* Ramped out, as every cut is; an FM operand ends with its carrier. */
+            for (int i = 0; i < e.bgCount; i++) {
+                Voice bg = e.bg[i];
+                if (bg.sourceChannel == channel && !bg.fmOperator) Sampler.startCutRamp(e, bg);
             }
             break;
         case 1:

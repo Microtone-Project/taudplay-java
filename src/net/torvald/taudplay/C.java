@@ -28,6 +28,9 @@ final class C {
     static final double FAST_FADE_SEC = 0.3;
     static final double VOL_RAMP_SEC = 0.002;
     static final double ATTACK_RAMP_SEC = 32.0 / 48000.0;
+    /* SoundFont-mode filter glide (item 297): FluidSynth's FLUID_BUFSIZE, 64
+     * samples at its default 44.1 kHz, carried as a time. */
+    static final double SF_FILTER_GLIDE_SEC = 64.0 / 44100.0;
     static final double PITCH_GLIDE_FULL_RATIO = 0.014545334937523746;
 
     static final int SAMPLE_BIN_TOTAL = 8388608;

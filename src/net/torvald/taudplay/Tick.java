@@ -110,6 +110,8 @@ final class Tick {
             v.envFilterValue = 0.5; v.envFilterIndex = 0; v.envFilterTimeSec = 0.0;
         }
         v.fadeoutVolume = 1.0;
+        v.fadeoutMix = 1.0;
+        v.fadeoutMixStep = 0.0;
         v.autoVibPhase = 0;
         v.autoVibTicksSinceTrigger = 0;
         v.filterY1 = 0.0; v.filterY2 = 0.0; v.filterX1 = 0.0; v.filterX2 = 0.0;
@@ -568,13 +570,16 @@ final class Tick {
             updateFilterCutoff(voice);
             Filter.refreshVoiceFilter(e, voice);
 
+            /* The mixer glides fadeoutMix to the new value across the tick,
+             * so the voice ends on the tick AFTER the multiplier reaches 0. */
             if (voice.keyOff || voice.noteFading) {
                 int fadeStep = voice.activeFadeoutStep;
                 if (fadeStep > 0) {
-                    voice.fadeoutVolume = dmax(voice.fadeoutVolume - fadeStep / 1024.0, 0.0);
                     if (voice.fadeoutVolume <= 0.0) voice.active = false;
+                    else voice.fadeoutVolume = dmax(voice.fadeoutVolume - fadeStep / 1024.0, 0.0);
                 }
             }
+            voice.fadeoutMixStep = spt > 0.0 ? (voice.fadeoutVolume - voice.fadeoutMix) / spt : 0.0;
 
             Envelope.advanceEnvelope(e, voice, tickSec);
             voice.envVolStep = spt > 0.0 ? (voice.envVolume - voice.envVolMix) / spt : 0.0;
@@ -704,17 +709,20 @@ final class Tick {
             bg.envVolStep = spt > 0.0 ? (bg.envVolume - bg.envVolMix) / spt : 0.0;
             Envelope.advancePitchEnvelope(e, bg, tickSec);
             Envelope.advanceFilterEnvelope(e, bg, tickSec);
+            /* Faded out on an EARLIER tick: its glide to silence is done. */
+            boolean fadedOut = (bg.keyOff || bg.noteFading) && bg.fadeoutVolume <= 0.0;
             if (bg.keyOff || bg.noteFading) {
                 int fadeStep = bg.activeFadeoutStep;
                 if (fadeStep > 0) bg.fadeoutVolume = dmax(bg.fadeoutVolume - fadeStep / 1024.0, 0.0);
             }
+            bg.fadeoutMixStep = spt > 0.0 ? (bg.fadeoutVolume - bg.fadeoutMix) / spt : 0.0;
             int autoVibDelta = Envelope.advanceAutoVibrato(e, bg);
             int finalPitch = iclamp(bg.noteVal + bg.layerPitchMod + autoVibDelta + pitchEnvDelta(bg), 0x20, 0xffff);
             bg.playbackRate = Sampler.computePlaybackRate(e, bg, finalPitch, e.tuningRatio);
             bg.renderPitch = finalPitch;
             updateFilterCutoff(bg);
             Filter.refreshVoiceFilter(e, bg);
-            if ((bg.keyOff || bg.noteFading) && bg.fadeoutVolume <= 0.0) {
+            if (fadedOut) {
                 bg.active = false;
                 e.bgRemoveAt(i);
             }
