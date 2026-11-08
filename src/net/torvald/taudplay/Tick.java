@@ -394,7 +394,8 @@ final class Tick {
                     }
                     Trigger.applyDuplicateCheck(e, vi, voice.delayedInst, voice.delayedNote);
                     Trigger.maybeSpawnBackgroundForNna(e, voice, vi, voice.delayedInst);
-                    Trigger.triggerMetaOrNote(e, voice, vi, voice.delayedNote, voice.delayedInst, voice.delayedVol);
+                    Trigger.triggerMetaOrNote(e, voice, vi, voice.delayedNote, voice.delayedInst, voice.delayedVol,
+                                              voice.delayedGlide);
                     break;
                 }
                 voice.noteDelayTick = -1;

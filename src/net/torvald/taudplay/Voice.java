@@ -213,6 +213,7 @@ final class Voice {
     boolean retrigFresh;
 
     int noteDelayTick = -1, delayedNote, delayedInst, delayedVol = -1;
+    boolean delayedGlide;  /* the delayed note was a G/L's (a lyric's glide, Trigger) */
     int delayedInterruptArg;
     int noteActionTick = -1, delayedAction = -1;
     int cutAtTick = -1;

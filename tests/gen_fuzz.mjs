@@ -389,6 +389,13 @@ const denseS9 = process.env.FUZZ_S9 === "1";
 // (S $73 on a layered note cuts every layer on the next one). With
 // FUZZ_INSTS=layered the notes are the layered metas and plain samples.
 const denseCuts = process.env.FUZZ_CUTS === "1";
+// FUZZ_GLIDES=1: tone portamentos (G, L) on lanes that keep going silent —
+// a quarter of the notes are cuts — so a G/L often lands with nothing
+// sounding and triggers as its note's glide (a lyric instrument then says its
+// syllable again and keeps its place). Half of those, in a wide-cell song, are
+// delayed by an S $Dx in the second effect column. Pair it with
+// FUZZ_LYRIC=1 FUZZ_INSTS=formant.
+const denseGlides = process.env.FUZZ_GLIDES === "1";
 const cutArg = () => pick([0x7000, 0x7000, 0x7000, 0x7100, 0x7200, 0x7300, 0x7300, 0x7300, 0x7400, 0x7500, 0x7600]);
 const EFFECTS = [
   [0x01, () => (pick([0, 1, 2, 4, 8, 12, 16, 20, 5, 9]) << 8)],
@@ -426,6 +433,8 @@ const EFFECTS = [
   [0x23, () => chance(0.5) ? 0xf000 | ri(0, 0xfff) : ri(0, 0xfff)],
   [0x04, () => ri(0, 0xffff)],
 ];
+/** G (seven times in ten) or L, with the argument EFFECTS draws for it. */
+const glideFx = () => { const op = chance(0.7) ? 0x10 : 0x15; return EFFECTS.find((x) => x[0] === op); };
 const ROWS = 64;
 const cellBytes = wide ? 16 : 8;
 function randNote() {
@@ -499,7 +508,10 @@ if (process.env.FUZZ_IMIX !== "0" && chance(process.env.FUZZ_IMIX ? 1 : 0.7)) {
     verb: () => ({ size: rnd(), decay: f(0.2, 6), damping: f(1500, 18000), preDelay: ri(0, 20000) }),
     dlay: () => {
       const sync = chance(0.5);
-      return { sync, pingPong: chance(0.5), time: sync ? ri(1 << 14, 96 << 16) : ri(66, 1 << 16),
+      const pingPong = chance(0.5), time = sync ? ri(1 << 14, 96 << 16) : ri(66, 1 << 16);
+      // Right first (item 301) from the time's parity: no draw of its own, so
+      // every seed's random stream is what it was before.
+      return { sync, pingPong, pingRight: (time & 1) === 1, time,
         feedback: f(0, 1.1), highCut: f(800, 18000), lowCut: f(30, 900), wow: chance(0.3) ? 0 : rnd(), driveDb: f(0, 18) };
     },
     limi: () => ({ truePeak: chance(0.5), ceilingDb: f(-18, 0), releaseMs: f(5, 400), gainDb: f(-6, 12) }),
@@ -566,14 +578,15 @@ function makePattern() {
   for (let r = 0; r < ROWS; r++) {
     const o = r * cellBytes;
     const busy = chance(0.35);
-    const note = busy ? randNote() : (chance(0.1) ? 0 : 0);
+    const note = busy ? (denseGlides && chance(0.25) ? 2 : randNote()) : (chance(0.1) ? 0 : 0);
     const inst = busy && chance(0.8) ? pick(instChoices) : (chance(0.05) ? pick(instChoices) : 0);
     w16(p, o, note);
     p[o + 2] = inst;
     const volEff = chance(0.6) ? 0 : ri(1, 3);
-    const hasFx = chance(denseS9 || denseCuts ? 0.8 : 0.45);
+    const hasFx = chance(denseS9 || denseCuts || denseGlides ? 0.8 : 0.45);
     const [op, argf] = !hasFx ? [0, () => 0] : denseS9 && chance(0.5) ? [0x1c, s9Arg]
-      : denseCuts && chance(0.5) ? [0x1c, cutArg] : pick(EFFECTS);
+      : denseCuts && chance(0.5) ? [0x1c, cutArg]
+      : denseGlides && chance(0.6) ? glideFx() : pick(EFFECTS);
     const arg = hasFx ? argf() : 0;
     if (!wide) {
       p[o + 3] = (chance(0.5) ? ri(0, 63) : 0) | ((chance(0.5) ? 3 : volEff) << 6);
@@ -589,7 +602,9 @@ function makePattern() {
       const panEff = chance(0.6) ? 3 : ri(0, 2);
       p[o + 8] = ((az >>> 8) << 7) | ((chance(0.5) ? 3 : volEff) << 4) | panEff;
       p[o + 9] = ri(0, 255);
-      if (chance(0.3)) {
+      if (denseGlides && (op === 0x10 || op === 0x15) && chance(0.5)) {
+        p[o + 10] = 0x1c; w16(p, o + 11, 0xd000 | (ri(1, 3) << 8));
+      } else if (chance(0.3)) {
         if (chance(0.4)) { p[o + 10] = 0xba; w16(p, o + 11, ri(0, 0xffff)); }
         else { const [op2, a2] = pick(EFFECTS); p[o + 10] = op2; w16(p, o + 11, a2()); }
       }

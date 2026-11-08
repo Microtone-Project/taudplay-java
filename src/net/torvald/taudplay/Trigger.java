@@ -267,17 +267,39 @@ final class Trigger {
      * foreground voice is `voice` (spec §5.5.3, "Lyric instruments"), or null
      * for any other instrument. An instrument byte starts the lyrics over;
      * every trigger sings the syllable at the lane's position and moves it
-     * on, back to the first after the last. */
-    private static FormantPatch lyricTrigger(Voice voice, Inst inst, int instId) {
+     * on, back to the first after the last.
+     *
+     * A tone portamento (G, L) that triggers only because nothing is
+     * sounding on the lane — a play started after the note it glides, or a
+     * note that had run out — is still that note's glide (`glide`): it says
+     * the syllable the lane's note was singing again and leaves the position
+     * where it is, as a glide from a sounding note does. An instrument byte
+     * still starts the lyrics over, handing the note its first syllable when
+     * it was singing none of this instrument's (the porta row's instrument
+     * change, Row.applyInstrumentChange). */
+    private static FormantPatch lyricTrigger(Voice voice, Inst inst, int instId, boolean glide) {
         if (inst.lyric == null) return null;
         int n = inst.lyricEntry.numSyllables;
+        if (glide) {
+            FormantPatch cur = voice.formant != null ? voice.formant.patch : null;
+            int k = -1;
+            /* JS inst.lyric.indexOf(cur): the syllable patches are this array. */
+            if (cur != null) for (int i = 0; i < n; i++) if (inst.lyric[i] == cur) { k = i; break; }
+            if (instId != 0) {
+                voice.lyricPos = 0;
+                return k >= 0 ? cur : inst.lyric[0];
+            }
+            if (k >= 0) return cur;
+        }
         if (instId != 0 || voice.lyricPos >= n) voice.lyricPos = 0;
         FormantPatch syl = inst.lyric[voice.lyricPos];
         voice.lyricPos = voice.lyricPos + 1 >= n ? 0 : voice.lyricPos + 1;
         return syl;
     }
 
-    static void triggerMetaOrNote(Engine e, Voice voice, int vi, int noteVal, int instId, int rowVolOverride) {
+    /** glide: a G/L on a silent lane, triggering as its note's glide (lyrics). */
+    static void triggerMetaOrNote(Engine e, Voice voice, int vi, int noteVal, int instId, int rowVolOverride,
+                                  boolean glide) {
         Meta.Layer[] layers = new Meta.Layer[META_MAX_LAYERS];
         NotePanSeed seed = new NotePanSeed();
 
@@ -290,7 +312,7 @@ final class Trigger {
         Fm.dropFmOperators(e, vi);
         Inst inst = instId != 0 ? e.instruments[instId] : e.instruments[voice.instrumentId];
         if (!inst.isMeta()) {
-            triggerNote(e, voice, noteVal, instId, rowVolOverride, lyricTrigger(voice, inst, instId));
+            triggerNote(e, voice, noteVal, instId, rowVolOverride, lyricTrigger(voice, inst, instId, glide));
             voice.layerMixGain = 1.0;
             voice.layerRelDetune = 0;
             voice.layerFixedNote = -1;

@@ -247,7 +247,7 @@ final class Row {
                     int trigVol = row.volumeEff == 0 ? row.volume : -1;
                     Trigger.applyDuplicateCheck(e, vi, row.instrment, voice.noteVal);
                     Trigger.maybeSpawnBackgroundForNna(e, voice, vi, row.instrment);
-                    Trigger.triggerMetaOrNote(e, voice, vi, voice.noteVal, row.instrment, trigVol);
+                    Trigger.triggerMetaOrNote(e, voice, vi, voice.noteVal, row.instrment, trigVol, false);
                 } else if (row.instrment != 0 && !e.instruments[row.instrment].isMeta()) {
                     voice.instrumentId = row.instrment;
                     Inst newInst = e.instruments[voice.instrumentId];
@@ -304,12 +304,15 @@ final class Row {
                     voice.delayedNote = note;
                     voice.delayedInst = row.instrment;
                     voice.delayedVol = row.volumeEff == 0 ? row.volume : -1;
+                    voice.delayedGlide = toneG; /* a G/L on a silent lane: a glide's trigger (lyrics) */
                     scheduleDxnyAction(voice, sArg, sDelayTick);
                 } else {
                     int trigVol = row.volumeEff == 0 ? row.volume : -1;
                     Trigger.applyDuplicateCheck(e, vi, row.instrment, note);
                     Trigger.maybeSpawnBackgroundForNna(e, voice, vi, row.instrment);
-                    Trigger.triggerMetaOrNote(e, voice, vi, note, row.instrment, trigVol);
+                    /* toneG here = a G/L on a silent lane: it triggers, but as
+                     * a glide (a lyric instrument's syllable, Trigger.lyricTrigger). */
+                    Trigger.triggerMetaOrNote(e, voice, vi, note, row.instrment, trigVol, toneG);
                     scheduleDxnyAction(voice, sArg, sDelayTick);
                 }
             }

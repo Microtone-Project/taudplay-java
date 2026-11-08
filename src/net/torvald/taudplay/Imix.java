@@ -138,7 +138,7 @@ final class Imix {
     static final class Sat { int curve; float driveDb, inDb, outDb, bias; }
     static final class Unis { int voices; float detune, width, spacing; final LfoParams detuneLfo = new LfoParams(), widthLfo = new LfoParams(); }
     static final class Verb { float size, decay, damping; long preDelay; }
-    static final class Dlay { boolean sync, pingPong; long time; float feedback, highCut, lowCut, wow, driveDb; }
+    static final class Dlay { boolean sync, pingPong, pingRight; long time; float feedback, highCut, lowCut, wow, driveDb; }
     static final class Lim { boolean truePeak; float ceilingDb, releaseMs, gainDb; }
     static final class Mx { boolean swap, invL, invR, removeDc; float gainDb, width; }
 
@@ -396,6 +396,7 @@ final class Imix {
         case IMX_DLAY:
             e.dlay.sync = (b[p + 4] & 1) != 0;
             e.dlay.pingPong = (b[p + 4] & 2) != 0;
+            e.dlay.pingRight = (b[p + 4] & 6) == 6;   /* right first: R-L-R-L */
             e.dlay.time = e.dlay.sync ? clampfx(rdU32(b, p + 8), FX16 / 4, 1024L * FX16)
                                       : clampfx(rdU32(b, p + 8), 66, (long) IMX_DELAY_MAX_SEC * FX16);
             e.dlay.feedback = clampf(rdF32(b, p + 12), 0, 1.2, 0.35);
@@ -1671,6 +1672,8 @@ final class Imix {
             double wowAmp = p.dlay.wow * WOW_SEC * fs;
             double flutAmp = p.dlay.wow * FLUTTER_SEC * fs;
             boolean pingPong = p.dlay.pingPong && ctx.stereo && nch == 2;
+            /* The line the mid goes into (0 left, 1 right) and the other one. */
+            int pa = pingPong && p.dlay.pingRight ? 1 : 0, pb = 1 - pa;
             if (ctx.dry > 0) copySpan(data, ctx.dryBuf, nch, stride, n0, n1);
             t = target(ctx.bpm);
             if (!started) { d = t; started = true; }
@@ -1700,8 +1703,8 @@ final class Imix {
                 }
                 if (pingPong) {
                     double mid = (xs[0] + xs[1]) * 0.5;
-                    buf[w] = mid + fbs[1];
-                    buf[len + w] = fbs[0];
+                    buf[pa * len + w] = mid + fbs[pb];
+                    buf[pb * len + w] = fbs[pa];
                 } else {
                     for (int c = 0; c < nch; c++) buf[c * len + w] = xs[c] + fbs[c];
                 }
