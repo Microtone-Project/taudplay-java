@@ -55,6 +55,9 @@ final class Voice {
     double playbackRate = 1.0, currentPlaybackRate = 1.0;
     int pitchRampSamples;
     double pitchRampStep;
+    double pitchRampTarget;     /* where the running glide heads (§8.8) */
+    boolean pitchGlideWhole;    /* this tick's move is a slide: glide the whole tick */
+    boolean portaUnderway;      /* the last G step left its target unreached */
     boolean snapPlaybackRate = true;
     boolean forward = true;
     int instrumentId;

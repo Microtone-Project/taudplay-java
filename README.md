@@ -254,7 +254,7 @@ audible.
   `FUZZ_REPEAT`, `FUZZ_FIXED`, `FUZZ_WILD`).
 
 At the time of writing all of it is bit-identical against Node 26 (V8 14.6)
-and the JS library 5.0.0 (whose engine is the C one, as WebAssembly): the
+and the JS library 5.0.3 (whose engine is the C one, as WebAssembly): the
 eighteen files of the Microtone corpus and demos (every song, whole, in both
 monitor modes — the format-3 demos with their pitch extensions and an FM rack
 at its own rate among them), and hundreds of fuzzed songs.
@@ -271,7 +271,7 @@ diffed when the engine moves. Where C passes a struct by value or a pointer to
 fill, Java copies (`copyFrom`) or passes a small box; where C keeps a voice
 pool, Java lets the collector have the voices, as the JavaScript does.
 
-In step with taudplay 5.0.0 (Microtone.js 5.0.0, engine 74c9468d1933). As in
+In step with taudplay 5.0.3 (Microtone.js 5.0.3, engine 02a24a9e89d1). As in
 the C library, the engine's chase (`chase.js`) is not ported: seeking is
 `seekCue`, as it is in `TaudRenderer`.
 

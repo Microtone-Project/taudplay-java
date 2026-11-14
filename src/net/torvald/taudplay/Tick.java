@@ -426,8 +426,10 @@ final class Tick {
             }
 
             /* Pitch slides (E/F coarse on tick > 0). */
+            boolean slid = false, portaJump = false;
             if (e.tickInRow > 0 && (voice.slideMode == 1 || voice.slideMode == 2)) {
                 double nv;
+                slid = true;
                 if (e.toneMode == 1) nv = Tables.amigaSlideTick(voice, voice.slideArg);
                 else if (e.toneMode == 2) nv = Tables.linearFreqSlideTick(voice, voice.slideArg);
                 else nv = voice.noteVal + voice.slideArg;
@@ -439,6 +441,7 @@ final class Tick {
             if (voice.tonePortaTarget >= 0 && e.tickInRow > 0) {
                 double target = voice.tonePortaTarget;
                 int sp = voice.tonePortaSpeed;
+                boolean underway = voice.portaUnderway;
                 if (e.toneMode == 2) {
                     if (voice.linearFreq < 0.0) voice.linearFreq = Tables.noteValToFreqHz(voice.noteVal);
                     double targetFreq = Tables.noteValToFreqHz(target);
@@ -464,6 +467,13 @@ final class Tick {
                     voice.amigaPeriod = -1.0;
                     voice.linearFreq = -1.0;
                 }
+                /* A portamento that arrives in the step it began with is a note
+                 * change (the legato chain of G $FFFF), not a bend (§8.8). */
+                slid = true;
+                portaJump = voice.tonePortaTarget < 0 && !underway;
+                voice.portaUnderway = voice.tonePortaTarget >= 0;
+            } else if (voice.tonePortaTarget < 0) {
+                voice.portaUnderway = false;
             }
 
             /* Volume slides (D coarse on tick > 0). */
@@ -569,6 +579,9 @@ final class Tick {
             int autoVibDelta = Envelope.advanceAutoVibrato(e, voice);
             double finalPitch = dclamp(pitchToMixer + autoVibDelta + pitchEnvDelta(voice), 0x20, 0xffff);
             voice.playbackRate = Sampler.computePlaybackRate(e, voice, finalPitch, e.tuningRatio);
+            /* A slide's step glides over the whole tick whatever its size; an
+             * arpeggio or glissando on top makes the pitch STEP, so not then. */
+            voice.pitchGlideWhole = slid && !portaJump && !voice.arpActive && !voice.glissandoOn;
             voice.renderPitch = finalPitch;
 
             updateFilterCutoff(voice);
@@ -680,6 +693,7 @@ final class Tick {
                         }
                     }
                     bg.isLayerChild = false;
+                    bg.pitchGlideWhole = false;
                     bg.layerPitchMod = 0;
                     bg.layerFixedNote = -1;
                 } else {
@@ -694,6 +708,7 @@ final class Tick {
                         bg.pitchExcess = full - bg.noteVal;
                     }
                     bg.layerPitchMod = parent.pitchModDelta;
+                    bg.pitchGlideWhole = parent.pitchGlideWhole;
                     bg.basePitch = bg.noteVal;
                     bg.amigaPeriod = -1.0;
                     bg.linearFreq = -1.0;

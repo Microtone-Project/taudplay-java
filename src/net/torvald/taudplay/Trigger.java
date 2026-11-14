@@ -502,6 +502,7 @@ final class Trigger {
         Inst formantChip = inst.formant != null ? Formant.chipSource(e, inst) : null;
         if (formantChip != null) voice.activeSamplingRate = Formant.chipRate(formantChip);
         voice.tonePortaTarget = -1;
+        voice.portaUnderway = false;
         voice.samplePos = voice.activeSamplePlayStart;
         voice.forward = true;
         voice.active = true;
