@@ -46,7 +46,7 @@ final class Voice {
         double az, el;
         int chans;
         int rendererGen;
-        final double[] gains = new double[2 * 16];
+        final double[] gains = new double[2 * 17];   /* 2 sample channels × SPATIAL_MAX_CHANNELS */
     }
 
     boolean active;
@@ -63,15 +63,15 @@ final class Voice {
     int activePatchIndex = -1;
 
     boolean isLayerChild;
-    int layerRelDetune;
-    int layerFixedNote = -1;
+    double layerRelDetune;
+    double layerFixedNote = -1;  /* −1 = not fixed; else the pitch, inside the cell's range */
     double layerRelPan, layerRelElevation;
     double layerMixGain = 1.0;
-    int layerPitchMod;
+    double layerPitchMod;
     int nnaOverride = -1;
     boolean volEnvOn = true, panEnvOn = true, pitchEnvOn = true, filterEnvOn = true;
     boolean metaForeground;
-    int metaForegroundDetune;
+    double metaForegroundDetune;
     boolean noteFading;
 
     FmRig fmRig;                /* null, or rigStore */
@@ -143,7 +143,13 @@ final class Voice {
 
     long activeSamplePtr;
     int activeSampleLength, activeSamplePlayStart, activeSampleLoopStart, activeSampleLoopEnd;
-    int activeSamplingRate, activeSampleDetune, activeLoopMode;
+    int activeSamplingRate, activeLoopMode;
+    double activeSampleDetune;
+    /* How far the pitch this voice SOUNDS lies outside the sixteen octaves a
+     * note value can hold: a layer or an operator whose detune (or fixed
+     * note) takes it there keeps noteVal at the nearest end and carries the
+     * rest here, into the playback rate (§9.18). 0 for any other voice. */
+    double pitchExcess;
     int activeVibratoSpeed, activeVibratoSweep, activeVibratoDepth, activeVibratoRate;
     int activeVibratoWaveform;
     int activeChanCount = 1, activeChanMode;
@@ -152,6 +158,9 @@ final class Voice {
 
     EnvPoint[] activeVolEnv = DEFAULT_ENV_3F;
     int activeVolEnvLoop, activeVolEnvSustain;
+    /* A node value's full volume: 63, or 255 for an instrument whose byte 14
+     * bit 6 says its volume envelopes are 8-bit (resolveActiveEnvelopes). */
+    int activeVolEnvMax = 63;
     EnvPoint[] activePanEnv = DEFAULT_ENV_80;
     int activePanEnvLoop, activePanEnvSustain;
     EnvPoint[] activePitchEnv = DEFAULT_ENV_80;
@@ -170,6 +179,10 @@ final class Voice {
     boolean filterIsBiquad;
     double filterBqB02, filterBqB1, filterBqA1, filterBqA2, filterX1, filterX2;
     int filterCutoffCached = -1, filterResonanceCached = -1;
+    /* How many times a frame this voice's filter runs: an FM operator past
+     * the first is filtered at its rack's rate, so its coefficients are made
+     * for that rate. 0 or 1 = the engine's own. */
+    int filterOversample;
     /* SoundFont-mode filter glide (Filter.advanceFilterGlide): cutoff in cents
      * and Q where they stand, per-sample steps, samples left, the refresh's
      * targets. sfCents NaN = the next refresh lands at once. */
@@ -178,14 +191,15 @@ final class Voice {
 
     int randomVolBias, randomPanBias;
 
-    int noteVal, basePitch = 0x4000;
+    double noteVal, basePitch = 0x4000;  /* 4096-TET; a wide cell's note carries sixteenths */
     double amigaPeriod = -1.0, linearFreq = -1.0;
-    int renderPitch;
-    int pitchModDelta;
+    double renderPitch;
+    double pitchModDelta;
 
     int rowEffect, rowEffectArg;
     int slideMode, slideArg;
-    int tonePortaTarget = -1, tonePortaSpeed;
+    double tonePortaTarget = -1;
+    int tonePortaSpeed;
     int arpOff1, arpOff2;
     boolean arpActive;
     int lastArpVoice;
@@ -212,7 +226,9 @@ final class Voice {
      * restart, whose chip then keys on from silence. */
     boolean retrigFresh;
 
-    int noteDelayTick = -1, delayedNote, delayedInst, delayedVol = -1;
+    int noteDelayTick = -1;
+    double delayedNote;
+    int delayedInst, delayedVol = -1;
     boolean delayedGlide;  /* the delayed note was a G/L's (a lyric's glide, Trigger) */
     int delayedInterruptArg;
     int noteActionTick = -1, delayedAction = -1;

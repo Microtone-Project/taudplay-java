@@ -14,11 +14,23 @@ final class Cell {
     int elevation;              /* signed */
     int effect2;
     int effectArg2;
+    /* Byte 13's high nibble as a wide decode last left it (0..15): the four
+     * bits that make a wide cell's pitch 65536-TET (file format §5.1). */
+    int noteFine;
+    /* The sixteenths the note CARRIES: the nibble under a wide decode (none
+     * under a sentinel word), none once a narrow decode has written a note
+     * byte. A pattern slot is reused across files, so reading noteFine itself
+     * could bend a narrow song's pitch. */
+    int noteFrac;
+
+    /** The note in 4096-TET units: the word plus the sixteenths it carries. */
+    double noteValue() { return note + noteFrac / 16.0; }
 
     void copyFrom(Cell o) {
         note = o.note; instrment = o.instrment; volume = o.volume; volumeEff = o.volumeEff;
         pan = o.pan; panEff = o.panEff; effect = o.effect; effectArg = o.effectArg;
         azimuth = o.azimuth; elevation = o.elevation; effect2 = o.effect2; effectArg2 = o.effectArg2;
+        noteFine = o.noteFine; noteFrac = o.noteFrac;
     }
 
     static Cell[] newPattern() {

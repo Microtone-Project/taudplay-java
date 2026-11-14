@@ -104,12 +104,13 @@ final class Effects {
             boolean up = op == OP_F;
             if (rawArg != 0) voice.mem.ef = arg;
             if ((arg & 0xf000) == 0xf000) {
-                int mag = arg & 0x0fff, nv;
+                int mag = arg & 0x0fff;
                 int delta = up ? mag : -mag;
+                double nv;
                 if (e.toneMode == 1) nv = Tables.amigaSlideOnce(voice.noteVal, delta);
                 else if (e.toneMode == 2) nv = Tables.linearFreqSlideOnce(voice.noteVal, delta);
                 else nv = voice.noteVal + delta;
-                voice.noteVal = iclamp(nv, 0x20, 0xffff);
+                voice.noteVal = dclamp(nv, 0x20, 0xffff);
                 voice.basePitch = voice.noteVal;
                 voice.amigaPeriod = -1.0;
                 voice.linearFreq = -1.0;
@@ -342,7 +343,7 @@ final class Effects {
             break;
         case 0x1: voice.glissandoOn = x != 0; break;
         case 0x2:
-            voice.noteVal = iclamp(voice.noteVal + Tables.FINETUNE_OFFSET[x], 0x20, 0xffff);
+            voice.noteVal = dclamp(voice.noteVal + Tables.FINETUNE_OFFSET[x], 0x20, 0xffff);
             voice.basePitch = voice.noteVal;
             voice.amigaPeriod = -1.0;
             voice.linearFreq = -1.0;

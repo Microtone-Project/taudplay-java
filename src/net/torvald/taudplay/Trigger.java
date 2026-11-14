@@ -31,6 +31,10 @@ final class Trigger {
             v.activeVolEnvLoop = inst.volEnvLoop;
             v.activeVolEnvSustain = inst.volEnvSustainWord;
         }
+        /* An Ixmp patch's volume envelope is in its instrument's units: byte
+         * 14's bit 6 says whether a node's full volume is 63 or 255 (file
+         * format §7.2). */
+        v.activeVolEnvMax = inst.volEnv8() ? 255 : 63;
         /* The volume envelope answers to its P bit like every other envelope
          * (spec §7.2): a record that says "absent" plays at unity whatever its
          * nodes hold. */
@@ -99,7 +103,7 @@ final class Trigger {
              * tracker convention (§7.8, §7.9) — the pitch has to come from
              * somewhere. */
             v.activeSamplingRate = inst.isChip() && inst.samplingRate == 0 ? OPL_C4_RATE : inst.samplingRate;
-            v.activeSampleDetune = inst.sampleDetuneSigned();
+            v.activeSampleDetune = inst.sampleDetuneSigned() + inst.dSampleDetune;
             v.activeLoopMode = inst.loopMode;
             v.activeVibratoSpeed = inst.vibratoSpeed;
             v.activeVibratoSweep = inst.vibratoSweep;
@@ -117,7 +121,7 @@ final class Trigger {
             v.activeSampleLoopStart = patch.loopStart;
             v.activeSampleLoopEnd = patch.loopEnd;
             v.activeSamplingRate = patch.samplingRate;
-            v.activeSampleDetune = patch.sampleDetune;
+            v.activeSampleDetune = patch.sampleDetune + patch.dDetune;
             v.activeLoopMode = patch.loopMode;
             v.activeVibratoSpeed = vibDefer ? inst.vibratoSpeed : patch.vibratoSpeed;
             v.activeVibratoSweep = vibDefer ? inst.vibratoSweep : patch.vibratoSweep;
@@ -232,9 +236,7 @@ final class Trigger {
         }
     }
 
-    private static int pitchOf(Meta.Layer l, int noteVal) {
-        return iclamp(l.note(noteVal), 0x20, 0xffff);
-    }
+    private static double pitchOf(Meta.Layer l, double noteVal) { return l.pitch(noteVal); }
 
     private static void seedChildLaneContext(Voice child, Voice voice, int chanPan, int chanRowPan,
                                              int chanPanbrello, double chanAzimuth, double chanElevation) {
@@ -252,14 +254,14 @@ final class Trigger {
         child.overdriveAmp = voice.overdriveAmp;
     }
 
-    private static boolean fmSounds(Engine e, Meta.Layer o, int noteVal, int seedVol) {
+    private static boolean fmSounds(Engine e, Meta.Layer o, double noteVal, int seedVol) {
         /* An operator is an ordinary instrument or a low meta (an OPL channel
          * or a PSG pair, read as the chip reads its carriers). A high meta is
          * not: a formant instrument, a layer table or another rack is a sound
          * made OUT of sources, and taking one would be recursion (§7.4). */
         return o.instIdx >= 1 && o.instIdx <= 1023 &&
             !e.instruments[o.instIdx].isMeta() && !e.instruments[o.instIdx].isHighMeta() &&
-            noteVal >= o.pitchStart && noteVal <= o.pitchEnd &&
+            PitchExt.pitchInRange(noteVal, o.pitchStart, o.dLo, o.pitchEnd, o.dHi) &&
             seedVol >= o.volStart && seedVol <= o.volEnd;
     }
 
@@ -298,7 +300,7 @@ final class Trigger {
     }
 
     /** glide: a G/L on a silent lane, triggering as its note's glide (lyrics). */
-    static void triggerMetaOrNote(Engine e, Voice voice, int vi, int noteVal, int instId, int rowVolOverride,
+    static void triggerMetaOrNote(Engine e, Voice voice, int vi, double noteVal, int instId, int rowVolOverride,
                                   boolean glide) {
         Meta.Layer[] layers = new Meta.Layer[META_MAX_LAYERS];
         NotePanSeed seed = new NotePanSeed();
@@ -363,11 +365,12 @@ final class Trigger {
         voice.layerMixGain = Tables.META_MIX_GAIN[l0.mixOctet & 0xff];
         voice.layerRelDetune = 0;
         voice.layerFixedNote = l0.fixedPitch ? pitchOf(l0, noteVal) : -1;
+        voice.pitchExcess = l0.excess(noteVal);
         voice.layerRelPan = 0;
         voice.layerRelElevation = 0;
         voice.isLayerChild = false;
         voice.metaForeground = true;
-        voice.metaForegroundDetune = l0.detune;
+        voice.metaForegroundDetune = l0.detune + l0.dDetune;
         for (int k = 1; k < nLayers; k++) {
             Meta.Layer lk = layers[k];
             Voice child = new Voice();
@@ -378,6 +381,7 @@ final class Trigger {
             child.displayInst = voice.displayInst;
             child.layerRelDetune = lk.note(noteVal) - l0.note(noteVal);
             child.layerFixedNote = lk.fixedPitch ? pitchOf(lk, noteVal) : -1;
+            child.pitchExcess = lk.excess(noteVal);
             if (seed.present) {
                 child.layerRelPan = seed.pan - l0Pan;
                 child.layerRelElevation = seed.elevation - l0Elevation;
@@ -393,7 +397,7 @@ final class Trigger {
         capBackgroundVoices(e);
     }
 
-    private static void triggerFmRack(Engine e, Voice voice, int vi, int noteVal, Inst inst,
+    private static void triggerFmRack(Engine e, Voice voice, int vi, double noteVal, Inst inst,
                                       int rowVolOverride, int seedVol) {
         Meta meta = inst.meta;
         Meta.Layer[] ops = meta.layers;
@@ -418,11 +422,12 @@ final class Trigger {
         voice.layerMixGain = 1.0;
         voice.layerRelDetune = 0;
         voice.layerFixedNote = ops[0].fixedPitch ? pitchOf(ops[0], noteVal) : -1;
+        voice.pitchExcess = ops[0].excess(noteVal);
         voice.layerRelPan = 0;
         voice.layerRelElevation = 0;
         voice.isLayerChild = false;
         voice.metaForeground = true;
-        voice.metaForegroundDetune = ops[0].detune;
+        voice.metaForegroundDetune = ops[0].detune + ops[0].dDetune;
 
         /* The rig is built after the trigger (which drops any previous one);
          * the JS builds it before, but nothing in between reads it. */
@@ -438,6 +443,9 @@ final class Trigger {
             if (!referenced[k] || !fmSounds(e, ops[k], noteVal, seedVol)) continue;
             Voice op = new Voice();
             seedChildLaneContext(op, voice, chanPan, chanRowPan, chanPanbrello, chanAzimuth, chanElevation);
+            /* Its filter runs at the rack's rate (Fm): said before the
+             * trigger makes the first coefficients. */
+            op.filterOversample = e.fmOversample;
             triggerNote(e, op, pitchOf(ops[k], noteVal), ops[k].instIdx, rowVolOverride, null);
             op.isLayerChild = true;
             op.fmOperator = true;
@@ -446,6 +454,7 @@ final class Trigger {
             op.displayInst = voice.displayInst;
             op.layerRelDetune = ops[k].note(noteVal) - ops[0].note(noteVal);
             op.layerFixedNote = ops[k].fixedPitch ? pitchOf(ops[k], noteVal) : -1;
+            op.pitchExcess = ops[k].excess(noteVal);
             op.layerMixGain = 1.0;
             op.layerRelPan = 0;
             op.layerRelElevation = 0;
@@ -461,11 +470,11 @@ final class Trigger {
         return iclamp(e.tsWideCells ? v >> 2 : v, 0, 0x3f);
     }
 
-    static void triggerNote(Engine e, Voice voice, int noteVal, int instId, int volOverride, FormantPatch lyricPatch) {
+    static void triggerNote(Engine e, Voice voice, double noteVal, int instId, int volOverride, FormantPatch lyricPatch) {
         triggerNoteSeed(e, voice, noteVal, instId, volOverride, new NotePanSeed(), lyricPatch);
     }
 
-    private static void triggerNoteSeed(Engine e, Voice voice, int noteVal, int instId, int volOverride,
+    private static void triggerNoteSeed(Engine e, Voice voice, double noteVal, int instId, int volOverride,
                                         NotePanSeed seed, FormantPatch lyricPatch) {
         boolean mayCarry = voice.active && !voice.keyOff && !voice.noteFading &&
             (instId == 0 || instId == voice.instrumentId);
@@ -479,6 +488,7 @@ final class Trigger {
 
         voice.oplCarry = false;
         voice.psgCarry = false;
+        voice.pitchExcess = 0.0;   /* a layer's or an operator's is set by its trigger, after this */
 
         if (instId != 0) voice.instrumentId = instId;
         Inst inst = e.instruments[voice.instrumentId];
@@ -499,7 +509,7 @@ final class Trigger {
         if (!(mayCarry && Envelope.envCarry(voice.activeVolEnvLoop))) {
             voice.envIndex = 0;
             voice.envTimeSec = 0.0;
-            voice.envVolume = dclamp(voice.activeVolEnv[0].value / 63.0, 0.0, 1.0);
+            voice.envVolume = dclamp(voice.activeVolEnv[0].value / (double) voice.activeVolEnvMax, 0.0, 1.0);
             voice.envVolMix = voice.envVolume;
             voice.envVolStep = 0.0;
         }
@@ -567,7 +577,7 @@ final class Trigger {
                 }
             }
             if (inst.pitchPanSeparation != 0) {
-                double noteDelta = (noteVal - inst.pitchPanCentre) / 4096.0;
+                double noteDelta = (noteVal - (inst.pitchPanCentre + inst.dPitchPanCentre)) / 4096.0;
                 double panShift = trunc(noteDelta * inst.pitchPanSeparation * 4.0);
                 Spatial.applyNotePanSlide(e, voice, panShift);
                 seed.present = true;
@@ -639,19 +649,21 @@ final class Trigger {
         if (voice.panbrelloRetrig) voice.panbrelloLfoPos = 0;
     }
 
-    /** What a trigger of (instId, note) sounds on the foreground voice: only
-     *  an FM rack shifts it, to operator 0's instrument and detune.
-     *  Returns inst | note << 16. */
-    private static long principalOf(Engine e, int instId, int note) {
-        Inst inst = e.instruments[instId];
-        long r = (instId & 0xffffL) | ((long) note << 16);
-        if (!inst.isFm() || inst.meta.count == 0) return r;
-        Meta.Layer op0 = inst.meta.layers[0];
-        if (op0.instIdx < 1 || op0.instIdx > 1023) return r;
-        return (op0.instIdx & 0xffffL) | ((long) iclamp(op0.note(note), 0x20, 0xffff) << 16);
-    }
+    private static final class DupKey { int newInstId; double newNote; long newSmpPtr; int newSmpLen; }
 
-    private static final class DupKey { int newInstId, newNote; long newSmpPtr; int newSmpLen; }
+    /** What a trigger of (instId, note) sounds on the foreground voice: only
+     *  an FM rack shifts it, to operator 0's instrument and detune. Written
+     *  into k's newInstId and newNote. */
+    private static void principalOf(Engine e, int instId, double note, DupKey k) {
+        Inst inst = e.instruments[instId];
+        k.newInstId = instId;
+        k.newNote = note;
+        if (!inst.isFm() || inst.meta.count == 0) return;
+        Meta.Layer op0 = inst.meta.layers[0];
+        if (op0.instIdx < 1 || op0.instIdx > 1023) return;
+        k.newInstId = op0.instIdx;
+        k.newNote = op0.pitch(note);
+    }
 
     private static boolean isDuplicate(Engine e, Voice v, DupKey k, boolean bare) {
         Inst existInst = e.instruments[v.instrumentId];
@@ -696,7 +708,7 @@ final class Trigger {
         }
     }
 
-    static void applyDuplicateCheck(Engine e, int channel, int instId, int note) {
+    static void applyDuplicateCheck(Engine e, int channel, int instId, double note) {
         DupKey k = new DupKey();
         /* Type 4, Lane (item 216): a note with no instrument byte is checked
          * too, against the lane's instrument; types 1-3 ask only about a
@@ -704,9 +716,7 @@ final class Trigger {
         boolean bare = instId == 0;
         if (bare) instId = e.voices[channel].instrumentId;
         if (instId == 0) return;
-        long pr = principalOf(e, instId, note);
-        k.newInstId = (int) (pr & 0xffff);
-        k.newNote = (int) (pr >>> 16);
+        principalOf(e, instId, note, k);
         Inst newInst = e.instruments[k.newInstId];
         Patch newPatch = Inst.resolvePatch(newInst, k.newNote, 0x3f);
         k.newSmpPtr = newPatch != null ? newPatch.samplePtr : newInst.samplePtr;
@@ -799,6 +809,7 @@ final class Trigger {
         v.filterX1 = src.filterX1;
         v.filterX2 = src.filterX2;
         v.filterCutoffCached = src.filterCutoffCached;
+        v.filterOversample = src.filterOversample;
         v.filterResonanceCached = src.filterResonanceCached;
         v.sfCents = src.sfCents; v.sfCentsIncr = src.sfCentsIncr; v.sfCentsLeft = src.sfCentsLeft;
         v.sfCentsAim = src.sfCentsAim; v.sfHzAim = src.sfHzAim; v.sfQ = src.sfQ;
@@ -834,6 +845,7 @@ final class Trigger {
         v.activeSampleLoopEnd = src.activeSampleLoopEnd;
         v.activeSamplingRate = src.activeSamplingRate;
         v.activeSampleDetune = src.activeSampleDetune;
+        v.pitchExcess = src.pitchExcess;
         v.activeLoopMode = src.activeLoopMode;
         v.funkWindow = src.funkWindow;
         v.modFunkWindow = src.modFunkWindow;
@@ -850,6 +862,7 @@ final class Trigger {
         v.activeVolEnv = src.activeVolEnv;
         v.activeVolEnvLoop = src.activeVolEnvLoop;
         v.activeVolEnvSustain = src.activeVolEnvSustain;
+        v.activeVolEnvMax = src.activeVolEnvMax;
         v.activePanEnv = src.activePanEnv;
         v.activePanEnvLoop = src.activePanEnvLoop;
         v.activePanEnvSustain = src.activePanEnvSustain;

@@ -26,7 +26,7 @@ package net.torvald.taudplay;
 
 public final class TaudPlayer {
     /** The library's version. */
-    public static final String VERSION = "4.8.1";
+    public static final String VERSION = "5.0.0";
     /** Frames per rendered block. Tick and row timing are per SAMPLE, so this
      *  is pure batching granularity and never changes what a song sounds like. */
     public static final int CHUNK = C.TAUD_CHUNK;

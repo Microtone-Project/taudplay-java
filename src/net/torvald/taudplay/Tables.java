@@ -118,6 +118,58 @@ final class Tables {
     private static final double AMIGA_LED_FC = 3090.533;
     private static final double AMIGA_LED_Q = 0.660225;
 
+    /** The modified Bessel function I0, by its series (a Kaiser window's shape). */
+    static double besselI0(double x) {
+        double sum = 1.0, term = 1.0, half = x * 0.5;
+        for (int k = 1; k < 24; k++) {
+            term *= (half / k) * (half / k);
+            sum += term;
+            if (term < sum * 1e-17) break;
+        }
+        return sum;
+    }
+
+    /** The FM racks' rate at this engine rate, and the low-pass they come
+     *  down through (spec §5.5.1): an eighth-order Butterworth at
+     *  FM_DEC_CUTOFF of the ENGINE's rate, designed at the rack's — so its
+     *  place in the oversampled spectrum is 2π × FM_DEC_CUTOFF ÷ factor,
+     *  whatever the rate. Four RBJ low-pass sections on the Butterworth pole
+     *  angles, lowest Q first. */
+    private static void buildFmDecimator(Engine e) {
+        final double pi = 3.141592653589793;
+        int n = (FM_OVERSAMPLE_RATE + e.rate - 1) / e.rate;
+        if (n < 1) n = 1;
+        if (n > FM_OVERSAMPLE_MAX) n = FM_OVERSAMPLE_MAX;
+        e.fmOversample = n;
+        double w0 = (2.0 * pi * FM_DEC_CUTOFF) / n;
+        double cosw = JsMath.cos(w0);
+        double sinw = JsMath.sin(w0);
+        for (int k = 0; k < FM_DEC_SECTIONS; k++) {
+            double q = 1.0 / (2.0 * JsMath.cos(((2 * k + 1) * pi) / (4.0 * FM_DEC_SECTIONS)));
+            double alpha = sinw / (2.0 * q);
+            double a0 = 1.0 + alpha;
+            double[] c = e.fmDec[k];
+            c[0] = ((1.0 - cosw) * 0.5) / a0;
+            c[1] = (1.0 - cosw) / a0;
+            c[2] = ((1.0 - cosw) * 0.5) / a0;
+            c[3] = (-2.0 * cosw) / a0;
+            c[4] = (1.0 - alpha) / a0;
+        }
+    }
+
+    /** One sample through the racks' low-pass: each section in transposed
+     *  direct form II, `state` its two numbers a section. */
+    static double fmDecimate(Engine e, double[] state, double x) {
+        for (int k = 0; k < FM_DEC_SECTIONS; k++) {
+            double[] c = e.fmDec[k];
+            double y = c[0] * x + state[2 * k];
+            state[2 * k] = c[1] * x - c[3] * y + state[2 * k + 1];
+            state[2 * k + 1] = c[2] * x - c[4] * y;
+            x = y;
+        }
+        return x;
+    }
+
     static void buildTables(Engine e) {
         final double pi = 3.141592653589793;
         double winFreq = pi / SINC_WIDTH / SINC_PRECISION;
@@ -130,6 +182,17 @@ final class Tables {
             double win = 0.5 + 0.5 * JsMath.cos(winFreq * i);
             e.sincTable[i] = (JsMath.sin(t) / t) * win;
         }
+        e.sincTable[SINC_TABLE_SIZE] = 0.0;
+        /* Tap j of phase p sits |j·SINC_PRECISION − p| table steps from the centre. */
+        for (int i = 0; i < SINC_PRECISION; i++) {
+            for (int j = 1 - SINC_WIDTH; j <= SINC_WIDTH; j++) {
+                e.sincPhase[i * SINC_TAPS + (j + SINC_WIDTH - 1)] = e.sincTable[Math.abs(j * SINC_PRECISION - i)];
+            }
+        }
+
+        for (int i = 0; i < 256; i++) e.pcmU8[i] = (i - 127.5) / 127.5;
+
+        buildFmDecimator(e);
 
         e.a500B1 = JsMath.exp((-2.0 * pi * AMIGA_A500_LP_FC) / rate);
         e.a500A0 = 1.0 - e.a500B1;
@@ -139,16 +202,6 @@ final class Tables {
         e.ledA2 = 2.0 * e.ledA1;
         e.ledB1 = 2.0 * (1.0 - aBase * aBase) * e.ledA1;
         e.ledB2 = (1.0 - bBase * aBase + aBase * aBase) * e.ledA1;
-    }
-
-    /** Windowed-sinc kernel value for fractional offset frac ∈ [0,1) and signed tap. */
-    static double sincTap(Engine e, double frac, int tap) {
-        double x = (tap - frac) * SINC_PRECISION;
-        double ax = Math.abs(x);
-        if (!(ax < SINC_PRECISION * SINC_WIDTH - 1)) return 0.0;
-        int idx = (int) ax;
-        double f = ax - idx;
-        return e.sincTable[idx] * (1.0 - f) + e.sincTable[idx + 1] * f;
     }
 
     /* ── command LFOs (H, U, R, Y) — 64 entries × 17 steps ── */
@@ -173,7 +226,7 @@ final class Tables {
 
     /* ── pitch conversions ── */
 
-    static double noteValToAmigaPeriod(int noteVal) {
+    static double noteValToAmigaPeriod(double noteVal) {
         return AMIGA_BASE_PERIOD * JsMath.pow(2.0, -(noteVal - MIDDLE_C) / 4096.0);
     }
 
@@ -181,7 +234,7 @@ final class Tables {
         return (int) JsMath.round(MIDDLE_C + 4096.0 * JsMath.log2(AMIGA_BASE_PERIOD / period));
     }
 
-    static double noteValToFreqHz(int noteVal) {
+    static double noteValToFreqHz(double noteVal) {
         return LINEAR_FREQ_C4_HZ * JsMath.pow(2.0, (noteVal - MIDDLE_C) / 4096.0);
     }
 
@@ -203,7 +256,7 @@ final class Tables {
         return amigaPeriodToNoteVal(v.amigaPeriod);
     }
 
-    static int amigaSlideOnce(int noteVal, int slideArg) {
+    static int amigaSlideOnce(double noteVal, int slideArg) {
         double period = noteValToAmigaPeriod(noteVal);
         double np = dmax(period - slideArg, 1.0);
         return amigaPeriodToNoteVal(np);
@@ -215,7 +268,7 @@ final class Tables {
         return freqHzToNoteVal(v.linearFreq);
     }
 
-    static int linearFreqSlideOnce(int noteVal, int slideArg) {
+    static int linearFreqSlideOnce(double noteVal, int slideArg) {
         double freq = noteValToFreqHz(noteVal);
         double nf = dmax(freq + slideArg, 1.0);
         return freqHzToNoteVal(nf);

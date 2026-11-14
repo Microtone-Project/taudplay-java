@@ -74,6 +74,8 @@ final class Parse {
         String projectName;
         Imix.Block[] imix = new Imix.Block[0];
         LyricEntry[] lyrics = new LyricEntry[0];
+        /* The `IPit` payload, inside projData (§9.18); pitchExtLen 0 = none. */
+        int pitchExtOff, pitchExtLen;
     }
 
     private static int rdU16(byte[] b, int o) { return (b[o] & 0xff) | ((b[o + 1] & 0xff) << 8); }
@@ -393,6 +395,12 @@ final class Parse {
         /* …and the lyric instruments' lyrics (§9.17), for the same reason. */
         sec = findSec(secs, "ILyr");
         if (sec != null) doc.lyrics = parseLyrics(doc.projData, sec.off, sec.len);
+        /* …and the instruments' pitch extensions (§9.18), for the same reason. */
+        sec = findSec(secs, "IPit");
+        if (sec != null) {
+            doc.pitchExtOff = sec.off;
+            doc.pitchExtLen = sec.len;
+        }
         return doc;
     }
 
@@ -444,5 +452,7 @@ final class Parse {
         for (IxmpEntry ie : doc.ixmp) {
             e.uploadInstrumentPatches(ie.instId, doc.projData, ie.off, ie.len);
         }
+        /* …and the pitch extensions of the records and patches just loaded. */
+        PitchExt.set(e, doc.projData, doc.pitchExtOff, doc.pitchExtLen);
     }
 }

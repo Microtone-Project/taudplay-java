@@ -60,6 +60,7 @@ final class C {
     static final int SINC_WIDTH = 3;
     static final int SINC_PRECISION = 1024;
     static final int SINC_TABLE_SIZE = SINC_PRECISION * SINC_WIDTH;
+    static final int SINC_TAPS = SINC_WIDTH * 2;   /* the taps a phase in [0, 1) reaches: −2…+3 */
 
     static final int NUM_INTERRUPTS = 16;
     static final int AUDITION_SLOT = 1024;
@@ -101,11 +102,21 @@ final class C {
     static final int META_TYPE_OPL = 8;
     static final int META_TYPE_PSG = 9;
     static final int META_LAYER_FIXED_PITCH = 0x40;
+    /** Byte 14 bit 6: the instrument's volume envelopes are 8-bit (file format §7.2). */
+    static final int INST_VOLENV8 = 0x40;
     static final int FM_MAX_OPERATORS = 16;
     /* Bytes 4…253 hold an FM rack and its program; byte 255 is every record's
      * IMix id and byte 254 stays clear (FM_PROGRAM_END). */
     static final int FM_PROGRAM_END = 254;
     static final int FM_STACK_MAX = 16;
+    /* A rack runs at the smallest whole multiple of the engine's rate that
+     * reaches FM_OVERSAMPLE_RATE (at most FM_OVERSAMPLE_MAX times it), and
+     * comes down through an eighth-order Butterworth low-pass — FM_DEC_SECTIONS
+     * biquads — at FM_DEC_CUTOFF of the engine's rate. */
+    static final int FM_OVERSAMPLE_RATE = 192000;
+    static final int FM_OVERSAMPLE_MAX = 8;
+    static final int FM_DEC_SECTIONS = 4;
+    static final double FM_DEC_CUTOFF = 0.45;
     static final int FM_WORD_OSC = 0x0000;
     static final int FM_WORD_MOD = 0x0400;
     static final int FM_WORD_FB = 0x0800;

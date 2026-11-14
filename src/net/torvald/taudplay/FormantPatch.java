@@ -21,6 +21,7 @@ final class FormantPatch {
     int srcInst;                /* the header's source instrument, 0 = the sample */
     int front, open, round, track, glide, timing;
     int refNote;                /* bits 0…14 of the word; 0 = the syllable has no vowel */
+    double dRefNote;            /* the pitch extension of refNote (§9.18) */
     boolean nasal;              /* bit 15: the vowel nasalised */
     int semivowel;
     boolean rhotic;

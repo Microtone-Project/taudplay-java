@@ -313,7 +313,7 @@ final class Opl {
         }
         int kind = patch.kind;
         if (kind == OPL_KIND_SD || kind == OPL_KIND_HH || kind == OPL_KIND_TC) {
-            int pbf = blockFnum(hz * JsMath.pow(2, patch.partnerDetune / 4096.0), patch.lowFnum);
+            int pbf = blockFnum(hz * JsMath.pow(2, (patch.partnerDetune + patch.dPartnerDetune) / 4096.0), patch.lowFnum);
             int pInc = (((pbf & 1023) * OPL_MULTIPLE_X2[patch.partnerMult]) << (pbf >> 10)) >> 1;
             int own = st.inc[0];
             if (kind == OPL_KIND_SD) {

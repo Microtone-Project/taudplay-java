@@ -246,13 +246,18 @@ audible.
   cell format, lane count, monitor mode, instrument kind (sampled, SF2-filtered,
   layered and FM metainstruments, OPL, PSG, formant, lyric), effect command,
   mastering chain and instrument mixing chain, and both implementations must
-  render them identically. The same `FUZZ_*` knobs as the C library's narrow it
+  render them identically — wide-cell notes with their sixteenths (65536-TET),
+  8-bit volume envelopes and pitch extensions (`IPit`, guarded and not)
+  among them. The same `FUZZ_*` knobs as the C library's narrow it
   (`FUZZ_INSTS=opl|psg|formant|fm|layered`, `FUZZ_IMIX`, `FUZZ_IMIX_KINDS`,
-  `FUZZ_LYRIC`, `FUZZ_S9`, `FUZZ_CUTS`, `FUZZ_GLIDES`, `FUZZ_WILD`).
+  `FUZZ_LYRIC`, `FUZZ_IPIT`, `FUZZ_S9`, `FUZZ_CUTS`, `FUZZ_GLIDES`,
+  `FUZZ_REPEAT`, `FUZZ_FIXED`, `FUZZ_WILD`).
 
-At the time of writing all of it is bit-identical against Node 26 (V8 14.6):
-the fifteen files of the Microtone corpus and demos (every song, whole, in both
-monitor modes), and hundreds of fuzzed songs.
+At the time of writing all of it is bit-identical against Node 26 (V8 14.6)
+and the JS library 5.0.0 (whose engine is the C one, as WebAssembly): the
+eighteen files of the Microtone corpus and demos (every song, whole, in both
+monitor modes — the format-3 demos with their pitch extensions and an FM rack
+at its own rate among them), and hundreds of fuzzed songs.
 
 ## Relationship to the other libraries
 
@@ -266,7 +271,7 @@ diffed when the engine moves. Where C passes a struct by value or a pointer to
 fill, Java copies (`copyFrom`) or passes a small box; where C keeps a voice
 pool, Java lets the collector have the voices, as the JavaScript does.
 
-In step with taudplay 4.8.3 (Microtone.js 4.8.3, engine ce007aa85fda). As in
+In step with taudplay 5.0.0 (Microtone.js 5.0.0, engine 74c9468d1933). As in
 the C library, the engine's chase (`chase.js`) is not ported: seeking is
 `seekCue`, as it is in `TaudRenderer`.
 

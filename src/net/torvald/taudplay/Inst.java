@@ -26,6 +26,8 @@ final class Inst {
     int dupCheckFlag, defaultNoteVolume, pf2EnvLoop, pf2EnvSustainWord;
     final int[] reserved = new int[5];
     int initialAttenOctet;
+    /* The pitch extension of sampleDetune and pitchPanCentre (§9.18); 0 without one. */
+    double dSampleDetune, dPitchPanCentre;
 
     int cutoffOverride = -1, resonanceOverride = -1;
 
@@ -76,6 +78,9 @@ final class Inst {
     /** The IMix block the instrument's voices mix through (byte 255; 0 = none). */
     int imixId() { return meta != null ? meta.imixId : reserved[4]; }
     boolean isFm() { return meta != null && meta.type == META_TYPE_FM; }
+    /** Byte 14 bit 6: this instrument's volume envelopes — its own and its
+     *  Ixmp patches' — hold 0…255 rather than 0…63 (file format §7.2). */
+    boolean volEnv8() { return (loopMode & INST_VOLENV8) != 0; }
     int newNoteAction() {
         int n = (instrumentFlag & 0x03) | (((instrumentFlag >> 5) & 1) << 2);
         return n <= 4 ? n : 0;
@@ -214,13 +219,13 @@ final class Inst {
         return patches.toArray(new Patch[0]);
     }
 
-    static Patch resolvePatch(Inst inst, int noteVal, int rowVolume) {
+    static Patch resolvePatch(Inst inst, double noteVal, int rowVolume) {
         /* An OPL, PSG or formant instrument has no keyboard map (§7.8, §7.9,
          * §7.6): a list a project carries for one is ignored on every path. */
         if (inst.extraPatches == null || inst.opl != null || inst.psg != null || inst.formant != null) return null;
         for (int i = 0; i < inst.patchCount; i++) {
             Patch p = inst.extraPatches[i];
-            if (noteVal >= p.pitchStart && noteVal <= p.pitchEnd &&
+            if (PitchExt.pitchInRange(noteVal, p.pitchStart, p.dLo, p.pitchEnd, p.dHi) &&
                 rowVolume >= p.volumeStart && rowVolume <= p.volumeEnd) return p;
         }
         return null;
@@ -228,12 +233,12 @@ final class Inst {
 
     /** All meta layers whose rectangle contains the trigger, in record order.
      *  Writes them into out[] (capacity META_MAX_LAYERS), returns the count. */
-    static int resolveMetaLayers(Inst inst, int noteVal, int rowVolume, Meta.Layer[] out) {
+    static int resolveMetaLayers(Inst inst, double noteVal, int rowVolume, Meta.Layer[] out) {
         int n = 0;
         if (inst.meta == null) return 0;
         for (int i = 0; i < inst.meta.count; i++) {
             Meta.Layer l = inst.meta.layers[i];
-            if (noteVal >= l.pitchStart && noteVal <= l.pitchEnd &&
+            if (PitchExt.pitchInRange(noteVal, l.pitchStart, l.dLo, l.pitchEnd, l.dHi) &&
                 rowVolume >= l.volStart && rowVolume <= l.volEnd) out[n++] = l;
         }
         return n;
@@ -315,7 +320,7 @@ final class Inst {
         case 11: sampleLoopStart = (sampleLoopStart & 0x00ff) | (b << 8); break;
         case 12: sampleLoopEnd = (sampleLoopEnd & 0xff00) | b; break;
         case 13: sampleLoopEnd = (sampleLoopEnd & 0x00ff) | (b << 8); break;
-        case 14: loopMode = b & 0x37; break;
+        case 14: loopMode = b & 0x77; break; /* bit 6: 8-bit volume envelopes */
         case 15: volEnvLoop = (volEnvLoop & 0xff00) | b; break;
         case 16: volEnvLoop = (volEnvLoop & 0x00ff) | (b << 8); break;
         case 17: panEnvLoop = (panEnvLoop & 0xff00) | b; break;
@@ -414,13 +419,10 @@ final class Inst {
 
     /* Re-derive the lyric syllables from the record as it now stands, in place
      * where the count allows (Microtone 4.7.0, `ILyr`). */
-    private void refreshLyric() {
+    void refreshLyric() {
         LyricEntry e = lyricEntry;
         if (formant == null || e == null) { lyric = null; return; }
         if (lyricStore == null || lyricStore.length != e.numSyllables) {
-            /* The engine only ever installs the lyrics of the document it
-             * loads, at load, so no voice still sings from the storage
-             * dropped here. */
             lyricStore = new FormantPatch[e.numSyllables];
             for (int i = 0; i < lyricStore.length; i++) lyricStore[i] = new FormantPatch();
         }
@@ -463,6 +465,8 @@ final class Inst {
             Meta m = new Meta();
             for (int n = 0; n < count; n++) {
                 if (o + 10 > 256) break;
+                System.arraycopy(b, at + o + 2, m.rawPitch, n * 6, 6);
+                m.rawCount = n + 1;
                 int bo8 = b[at + o + 8] & 0xff, bo9 = b[at + o + 9] & 0xff;
                 int instIdx = (b[at + o] & 0xff) | (((bo8 >> 6) & 0x3) << 8);
                 int mixOctet = b[at + o + 1] & 0xff;
@@ -487,6 +491,7 @@ final class Inst {
                     l.volStart = vStart;
                     l.volEnd = vEnd;
                     l.fixedPitch = fixedPitch;
+                    l.srcIndex = n;
                 }
                 o += 10;
             }

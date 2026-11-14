@@ -48,7 +48,12 @@ final class Envelope {
         return -1;
     }
 
-    private static double volOf(int value) { return dmin(dmax(value / 63.0, 0.0), 1.0); }
+    /** A node's volume out of the voice's full scale: 63, or 255 when the
+     *  instrument's byte 14 bit 6 says its envelopes are 8-bit (§7.2).
+     *  Divided by the integer, never multiplied by a reciprocal. */
+    private static double volOf(Voice v, int value) {
+        return dmin(dmax(value / (double) v.activeVolEnvMax, 0.0), 1.0);
+    }
 
     private static void jumpToSustainEnd(Voice v) {
         int sus = v.activeVolEnvSustain;
@@ -57,7 +62,7 @@ final class Envelope {
         if (v.envIndex >= susEnd) return;
         v.envIndex = susEnd;
         v.envTimeSec = 0.0;
-        v.envVolume = volOf(node(v.activeVolEnv, susEnd).value);
+        v.envVolume = volOf(v, node(v.activeVolEnv, susEnd).value);
     }
 
     static void applyKeyLift(Voice v, Inst inst) {
@@ -77,20 +82,20 @@ final class Envelope {
             boolean wrapping = wStart >= 0;
 
             if (wrapping && v.envIndex == wEnd && wStart == wEnd) {
-                v.envVolume = volOf(node(volEnv, v.envIndex).value);
+                v.envVolume = volOf(v, node(volEnv, v.envIndex).value);
             } else if (wrapping && v.envIndex == wEnd) {
                 v.envTimeSec = 0.0;
                 v.envIndex = wStart;
-                v.envVolume = volOf(node(volEnv, v.envIndex).value);
+                v.envVolume = volOf(v, node(volEnv, v.envIndex).value);
             } else if (v.envIndex >= MAX_IDX) {
                 int vEnd = node(volEnv, MAX_IDX).value;
-                v.envVolume = volOf(vEnd);
+                v.envVolume = volOf(v, vEnd);
                 if (vEnd == 0 && !wrapping) Sampler.startRampOut(e, v);
             } else {
                 double vOffset = Tables.minifloatToDouble(node(volEnv, v.envIndex).offset);
                 int vCurValue = node(volEnv, v.envIndex).value;
                 if (vOffset == 0.0) {
-                    v.envVolume = volOf(vCurValue);
+                    v.envVolume = volOf(v, vCurValue);
                     if (vCurValue == 0 && !wrapping) Sampler.startRampOut(e, v);
                 } else {
                     v.envTimeSec += tickSec;
@@ -98,10 +103,10 @@ final class Envelope {
                         v.envTimeSec -= vOffset;
                         int nextIdx = wrapping && v.envIndex == wEnd ? wStart : imin(v.envIndex + 1, MAX_IDX);
                         v.envIndex = nextIdx;
-                        v.envVolume = volOf(node(volEnv, v.envIndex).value);
+                        v.envVolume = volOf(v, node(volEnv, v.envIndex).value);
                     } else {
-                        double cur = volOf(vCurValue);
-                        double nxt = volOf(node(volEnv, imin(v.envIndex + 1, MAX_IDX)).value);
+                        double cur = volOf(v, vCurValue);
+                        double nxt = volOf(v, node(volEnv, imin(v.envIndex + 1, MAX_IDX)).value);
                         v.envVolume = cur + (nxt - cur) * (v.envTimeSec / vOffset);
                     }
                 }

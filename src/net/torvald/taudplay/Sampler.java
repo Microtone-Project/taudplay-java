@@ -20,9 +20,9 @@ final class Sampler {
     private static int dpcmGet(Voice v, int side) { return side == LEFT ? v.nesDpcmCounter : v.right.nesDpcmCounter; }
     private static void dpcmSet(Voice v, int side, int x) { if (side == LEFT) v.nesDpcmCounter = x; else v.right.nesDpcmCounter = x; }
 
-    static double computePlaybackRate(Engine e, Voice v, int noteVal, double tuningRatio) {
+    static double computePlaybackRate(Engine e, Voice v, double noteVal, double tuningRatio) {
         return ((double) v.activeSamplingRate / e.rate) *
-               JsMath.pow(2.0, (noteVal - MIDDLE_C + v.activeSampleDetune) / 4096.0) *
+               JsMath.pow(2.0, (noteVal - MIDDLE_C + v.activeSampleDetune + v.pitchExcess) / 4096.0) *
                tuningRatio;
     }
 
@@ -45,7 +45,7 @@ final class Sampler {
         int hi = sampleLen - 1;
         int i = idx < 0 ? 0 : idx > hi ? hi : idx;
         long p = basePtr + i;
-        return (e.poolAt(p > binMax ? binMax : p) - 127.5) / 127.5;
+        return e.pcmU8[e.poolAt(p > binMax ? binMax : p)];
     }
 
     private static double readModifiedSamplePoint(Engine e, Voice v, Inst inst, int idx,
@@ -59,7 +59,7 @@ final class Sampler {
             ? SampleMod.extModTouches(g, inst.modInvert, inst.modF, inst.modStepIndex, i0)
             : SampleMod.modTouches(g, inst.modInvert, i0);
         if (!g.live || !touches) {
-            return (poolByte(e, inst, i0, binMax, basePtr, ls, le) - 127.5) / 127.5;
+            return e.pcmU8[poolByte(e, inst, i0, binMax, basePtr, ls, le) & 0xff];
         }
         int i = extended ? SampleMod.modAddressExt(g, i0, inst)
                          : SampleMod.modAddress(g, i0, inst.modRot, inst.modScatter, inst.modSeed);
@@ -109,30 +109,49 @@ final class Sampler {
 
         switch (interpMode) {
         case INTERP_DEFAULT: {
+            /* The windowed sinc of spec §8.3: the position's fraction picks
+             * one of SINC_PRECISION phases (downwards — the kernel is not
+             * interpolated between them), and the phase's coefficients weigh
+             * the bytes around the position. Written out for a kernel of
+             * width 3. */
             double acc = 0.0;
             if (plain) {
                 long base = basePtr + i0;
-                /* The JS guard is `base + SINC_WIDTH <= binMax`; a trimmed pool
-                 * also needs every tap inside it, and when one is not the
-                 * clamped path below reads the same zeros the full pool holds. */
+                /* A trimmed pool also needs every tap inside it, and when one
+                 * is not the clamped path below reads the same zeros the full
+                 * pool holds. */
                 if (i0 >= SINC_WIDTH && i0 + SINC_WIDTH <= sampleLen - 1 && base + SINC_WIDTH <= binMax &&
                     base + SINC_WIDTH < e.samplePoolLen) {
+                    /* The interior, which is nearly always: every tap is
+                     * inside the sample and the pool, and i0 was not clamped,
+                     * so frac is in [0, 1) and the phase is a row of the table. */
                     byte[] bin = e.sampleBin;
-                    for (int j = -SINC_WIDTH; j <= SINC_WIDTH; j++) {
-                        double coeff = Tables.sincTap(e, frac, j);
-                        if (coeff != 0.0) acc += (((bin[(int) (base + j)] & 0xff) - 127.5) / 127.5) * coeff;
-                    }
+                    int b = (int) base;
+                    double[] pcm = e.pcmU8;
+                    double[] k = e.sincPhase;
+                    int r = SINC_TAPS * (int) (frac * SINC_PRECISION);
+                    acc += pcm[bin[b - 2] & 0xff] * k[r];
+                    acc += pcm[bin[b - 1] & 0xff] * k[r + 1];
+                    acc += pcm[bin[b] & 0xff] * k[r + 2];
+                    acc += pcm[bin[b + 1] & 0xff] * k[r + 3];
+                    acc += pcm[bin[b + 2] & 0xff] * k[r + 4];
+                    acc += pcm[bin[b + 3] & 0xff] * k[r + 5];
                     return acc;
                 }
-                for (int j = -SINC_WIDTH; j <= SINC_WIDTH; j++) {
-                    double coeff = Tables.sincTap(e, frac, j);
-                    if (coeff != 0.0) acc += poolPoint(e, sampleLen, binMax, basePtr, i0 + j) * coeff;
-                }
-                return acc;
             }
+            /* The same sum where a tap may fall off the sample (it reads the
+             * nearest byte the sample has), where the position itself has
+             * left it (frac is then outside [0, 1), and the taps it still
+             * reaches are the ones within SINC_WIDTH of it), or where the
+             * instrument's bytes are being modified as they are read. */
+            double qd = Math.floor(frac * SINC_PRECISION);
+            if (!(qd >= -2.0 * SINC_TABLE_SIZE && qd <= 2.0 * SINC_TABLE_SIZE)) return 0.0; /* out of every tap's reach */
+            int q = (int) qd;
             for (int j = -SINC_WIDTH; j <= SINC_WIDTH; j++) {
-                double coeff = Tables.sincTap(e, frac, j);
-                if (coeff != 0.0) acc += readSamplePoint(e, v, inst, i0 + j, sampleLen, binMax, basePtr) * coeff;
+                int idx = Math.abs(j * SINC_PRECISION - q);
+                if (idx >= SINC_TABLE_SIZE) continue;
+                acc += (plain ? poolPoint(e, sampleLen, binMax, basePtr, i0 + j)
+                              : readSamplePoint(e, v, inst, i0 + j, sampleLen, binMax, basePtr)) * e.sincTable[idx];
             }
             return acc;
         }
@@ -209,8 +228,9 @@ final class Sampler {
     static void startRampOut(Engine e, Voice v) { beginRampOut(v, e.rampOutSamples); }
     static void startCutRamp(Engine e, Voice v) { beginRampOut(v, e.attackRampSamples); }
 
-    /** Step samplePos by the playback rate and apply the loop/end rules. */
-    private static void advanceSamplePos(Engine e, Voice v, Inst inst, int sampleLen) {
+    /** Step samplePos by `step` — the playback rate, or its share of one of an
+     *  oversampled rack's sub-steps — and apply the loop/end rules. */
+    private static void advanceSamplePos(Engine e, Voice v, Inst inst, int sampleLen, double step) {
         boolean zWindowed = v.funkPos >= 0 || v.funkWindow >= 0;
         double zLoopStart = v.funkWindow >= 0 ? v.funkWindow : v.activeSampleLoopStart;
         double zLoopEnd = zWindowed
@@ -227,7 +247,7 @@ final class Sampler {
         double loopEnd = extWindowed ? extLoopEnd : zLoopEnd;
 
         if (v.forward) {
-            v.samplePos += v.currentPlaybackRate;
+            v.samplePos += step;
             int effectiveLoopMode = ((v.activeLoopMode & 0x04) != 0 && v.keyOff) ? 0 : v.activeLoopMode & 3;
             switch (effectiveLoopMode) {
             case 0:
@@ -260,7 +280,7 @@ final class Sampler {
                 break;
             }
         } else {
-            v.samplePos -= v.currentPlaybackRate;
+            v.samplePos -= step;
             if (v.samplePos < loopStart) {
                 if (extWindowed) {
                     double prevWindow = extLoopStart;
@@ -303,7 +323,7 @@ final class Sampler {
             v.modFunkXfade--;
         }
         if (v.modXfade > 0) v.modXfade--;
-        if (v.rampOutSamples <= 0) advanceSamplePos(e, v, inst, sampleLen);
+        if (v.rampOutSamples <= 0) advanceSamplePos(e, v, inst, sampleLen, v.currentPlaybackRate);
     }
 
     /** The read position a phase-modulated fetch lands on. */
@@ -344,7 +364,41 @@ final class Sampler {
 
         if (v.modXfade > 0) v.modXfade--;
         if (v.rampOutSamples > 0) return sample;
-        advanceSamplePos(e, v, inst, sampleLen);
+        advanceSamplePos(e, v, inst, sampleLen, v.currentPlaybackRate);
+        return sample;
+    }
+
+    /** The same fetch as one of the `n` sub-steps an oversampled FM rack takes
+     *  per output frame (spec §5.5.1): the position moves a n-th of the
+     *  playback rate, and what is counted in output samples — the crossfades
+     *  of funk repeat and of the sample modifications — counts once a frame,
+     *  on the `last` sub-step. */
+    static double fetchTrackerSampleSub(Engine e, Voice v, Inst inst, int interpMode, double posOffset,
+                                        int n, boolean last) {
+        int binMax = SAMPLE_BIN_TOTAL - 1;
+        if (inst.index == 0) return 0.0;
+
+        int sampleLen = imax(v.activeSampleLength, 1);
+        double keepPos = v.samplePos;
+        if (posOffset != 0) v.samplePos = wrapReadPos(v, keepPos + posOffset, sampleLen);
+        double sample = interpolateChannel(e, v, inst, interpMode, sampleLen, binMax, v.activeSamplePtr, LEFT);
+        if (v.funkXfade > 0) {
+            double w = (double) v.funkXfade / v.funkXfadeLen;
+            sample = ghostChannel(e, v, inst, interpMode, sampleLen, binMax, v.activeSamplePtr,
+                                  LEFT, v.funkXfadeOffset) * w + sample * (1.0 - w);
+            if (last) v.funkXfade--;
+        }
+        if (v.modFunkXfade > 0) {
+            double w = (double) v.modFunkXfade / v.modFunkXfadeLen;
+            sample = ghostChannel(e, v, inst, interpMode, sampleLen, binMax, v.activeSamplePtr,
+                                  LEFT, v.modFunkXfadeOffset) * w + sample * (1.0 - w);
+            if (last) v.modFunkXfade--;
+        }
+        if (posOffset != 0) v.samplePos = keepPos;
+
+        if (last && v.modXfade > 0) v.modXfade--;
+        if (v.rampOutSamples > 0) return sample;
+        advanceSamplePos(e, v, inst, sampleLen, v.currentPlaybackRate / n);
         return sample;
     }
 

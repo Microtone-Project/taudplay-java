@@ -16,6 +16,7 @@ final class OplPatch {
     int kind;
     boolean deepTremolo, deepVibrato, nts, lowFnum;
     int feedback, cntA, cntB, partnerMult, partnerDetune;
+    double dPartnerDetune;      /* the pitch extension of partnerDetune (§9.18) */
     final Operator[] ops = { new Operator(), new Operator(), new Operator(), new Operator() };
     int outputs;
 }

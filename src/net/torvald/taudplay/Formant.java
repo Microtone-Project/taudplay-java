@@ -164,7 +164,9 @@ final class Formant {
 
     /** A syllable without a vowel (reference note 0) is a syllabic consonant. */
     private static boolean hasVowel(FormantPatch patch) { return patch.refNote != 0; }
-    private static int refNote(FormantPatch patch) { return patch.refNote != 0 ? patch.refNote : FORMANT_DEFAULT_REF; }
+    private static double refNote(FormantPatch patch) {
+        return patch.refNote != 0 ? patch.refNote + patch.dRefNote : FORMANT_DEFAULT_REF;
+    }
 
     private static double noteHz(int note) {
         return LINEAR_FREQ_C4_HZ * js_pow(2, (note - MIDDLE_C) / 4096.0);
@@ -890,7 +892,8 @@ final class Formant {
         out.open = syl.open & 0xff;
         out.round = syl.round & 0xff;
         out.track = rec.track;
-        out.refNote = syl.vowel ? refNote(rec) : 0;
+        out.refNote = syl.vowel ? (rec.refNote != 0 ? rec.refNote : FORMANT_DEFAULT_REF) : 0;
+        out.dRefNote = syl.vowel ? rec.dRefNote : 0.0;
         out.nasal = syl.nasal;
         out.glide = rec.glide;
         out.timing = rec.timing;
@@ -1919,7 +1922,9 @@ final class Formant {
          * bytes — for what its consonants take from "the vowel's". */
         sung = st.nucleus < 0;
         f0 = voiceF0(e, voice);
-        ref = noteHz(refNote(patch));
+        /* note_hz takes an int in the C: the reference note's fraction is
+         * truncated away there, and so here. */
+        ref = noteHz((int) refNote(patch));
         /* R-coloured part of the way (S $90kx gliding): between the plain
          * vowel and the r-coloured one, in log frequency, as the glide G
          * blends. */

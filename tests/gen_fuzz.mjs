@@ -5,8 +5,10 @@
 // (stereo included), layered and FM metainstruments (chip operators
 // included), OPL, PSG and formant instruments (sung from a sample or from a
 // chip), table kinds the engine does not know, sample modifications,
-// interrupts, mastering, instrument mixing chains (IMix, valid and not) and
-// lyric instruments (ILyr, valid and not).
+// interrupts, mastering, instrument mixing chains (IMix, valid and not),
+// lyric instruments (ILyr, valid and not), wide-cell notes with sixteenths
+// (65536-TET), 8-bit volume envelopes and pitch extensions (IPit, guarded
+// and not).
 //
 //   node tests/gen_fuzz.mjs <microtone-taudplay> SEED OUT.taud
 //
@@ -33,6 +35,17 @@ const lanes64 = variant === 1;
 const surround = variant === 2 ? 1 : variant === 3 ? 2 : 0;
 const fmtVer = wide ? 3 : 2;
 const numLanes = lanes64 ? ri(33, 40) : ri(4, 10);
+
+// FUZZ_REPEAT=1: every note is one of four pitches, each with its own
+// sixteenths in a wide-cell song (65536-TET), played on three sample
+// instruments whose Duplicate Check is the same-note kind — so the same pitch
+// comes round again on a lane still sounding it, and the check's same-note
+// test has something to find. $3355 + 9/16 sits just past a semitone's
+// rounding edge, where a glissando (S $1x, switched on and off in a wide
+// cell's second effect column) snaps up only if the fraction is kept.
+const denseRepeat = process.env.FUZZ_REPEAT === "1";
+const REPEAT_NOTES = [0x3355, 0x4000, 0x4abc, 0x5123];
+const REPEAT_FINE = new Map([[0x3355, 9], [0x4000, 0], [0x4abc, 8], [0x5123, 3]]);
 
 // ── sample pool ──
 const SAMPLEBIN = 8388608, INSTBIN = 262144;
@@ -106,6 +119,13 @@ for (let idx = 1; idx <= 24; idx++) {
   b[175] = chance(0.4) ? ri(0, 255) : 0;
   b[176] = chance(0.3) ? ri(0, 40) : 0;
   b[177] = ri(0, 255);
+  // Byte 14 bit 6, 8-bit volume envelopes (full volume 255, not 63), on a
+  // quarter of them: picked by a byte already drawn, the nodes widened from
+  // 0…63 to 0…255 in place, so every seed's random stream stays as it was.
+  if ((b[177] & 3) === 0) {
+    b[14] |= 0x40;
+    for (let k = 0; k < 25; k++) b[21 + 2 * k] = (b[21 + 2 * k] << 2) | (b[21 + 2 * k] >> 4);
+  }
   w16(b, 178, ri(0x3000, 0x7000));
   b[180] = chance(0.3) ? ri(0, 255) : 0;
   b[181] = chance(0.3) ? ri(0, 60) : 0;
@@ -116,6 +136,7 @@ for (let idx = 1; idx <= 24; idx++) {
   b[187] = chance(0.4) ? ri(0, 255) : 0;
   b[188] = chance(0.3) ? ri(0, 255) : 0;
   b[195] = chance(0.3) ? ri(0, 255) : 0;
+  if (denseRepeat) b[195] = (b[195] & 0xcc) | 0x01;  // type 1 (same note), the action as drawn
   b[196] = chance(0.5) ? ri(1, 255) : 0;
   b[251] = chance(0.3) ? ri(0, 255) : 0;
   b[252] = ri(0, 255); b[253] = ri(0, 255); b[254] = ri(0, 255);
@@ -142,6 +163,13 @@ function typedFields(b, s) {
   b[174] = chance(0.3) ? ri(0, 40) : 0;
   b[175] = chance(0.3) ? ri(0, 255) : 0;
   b[177] = ri(0, 255);
+  // Byte 14 bit 6, 8-bit volume envelopes (full volume 255, not 63), on a
+  // quarter of them: picked by a byte already drawn, the nodes widened from
+  // 0…63 to 0…255 in place, so every seed's random stream stays as it was.
+  if ((b[177] & 3) === 0) {
+    b[14] |= 0x40;
+    for (let k = 0; k < 25; k++) b[21 + 2 * k] = (b[21 + 2 * k] << 2) | (b[21 + 2 * k] >> 4);
+  }
   w16(b, 178, 0x5000);
   b[182] = chance(0.4) ? ri(0, 255) : 0xff;
   b[183] = ri(0, 255);
@@ -361,20 +389,23 @@ for (const idx of [...sampleInsts.slice(0, 10), oplInsts[0], psgInsts[0], forman
   if (!chance(0.6)) continue;
   const n = ri(1, 3);
   const bytes = [];
+  const pitch = [];   // each patch's three pitch words, for an IPit guard
   for (let k = 0; k < n; k++) {
     const s = samples[ri(0, samples.length - 1)], s2 = samples[ri(0, samples.length - 1)];
     const len = Math.min(s.len, s2.len);
     const ls = ri(0, len - 2);
-    bytes.push(...patchRecord({
+    const pr = {
       ps: k === n - 1 ? 0 : ri(0, 0x6000), pe: 0xffff, vs: 0, ve: 63,
       ptr: s.ptr, len, play: 0, ls, le: ri(ls + 1, len), rate: pick([8363, 22050, 44100]),
       detune: ri(-500, 500), loop: ri(0, 3), pan: chance(0.5) ? 0xff : ri(0, 254), dnv: chance(0.5) ? 0 : ri(1, 255),
       vs1: 0, vs2: 0, vd: 0, vr: 0, vw: 0xff,
       extra: chance(0.5), sf: chance(0.5), fade: ri(0, 200), cut: ri(0, 0xffff), res: ri(0, 0x3ff), atten: ri(0, 255),
       vol: chance(0.3), chan: chance(0.4), chanMode: ri(0, 1), ptr2: s2.ptr,
-    }));
+    };
+    bytes.push(...patchRecord(pr));
+    pitch.push([pr.ps, pr.pe, pr.detune & 0xffff]);
   }
-  ixmp.push({ inst: idx, count: n, bytes });
+  ixmp.push({ inst: idx, count: n, bytes, pitch });
 }
 
 // ── patterns ──
@@ -444,7 +475,7 @@ function randNote() {
   if (r < 0.07) return 3;
   if (r < 0.08) return 4;
   if (r < 0.10) return ri(0x10, 0x1f);
-  return ri(0x3000, 0x7000);
+  return denseRepeat ? pick(REPEAT_NOTES) : ri(0x3000, 0x7000);
 }
 // FUZZ_WILD=1 overwrites every OPL, PSG and formant block with random bytes
 // (for the sanitizer build: pointers, lengths and rates anywhere at all).
@@ -463,6 +494,7 @@ const instChoices = process.env.FUZZ_INSTS === "opl" ? oplInsts
   : process.env.FUZZ_INSTS === "formant" ? formantInsts
   : process.env.FUZZ_INSTS === "fm" ? [40, 41, 42, 43]
   : process.env.FUZZ_INSTS === "layered" ? [30, 31, 32, 33, 30, 31, 32, 33, ...sampleInsts]
+  : denseRepeat ? sampleInsts.slice(0, 3)
   : [...sampleInsts, 30, 31, 32, 33, 34, 35, 40, 41, 42, 43, ...oplInsts, ...oplInsts, ...psgInsts, ...psgInsts,
     ...formantInsts, ...formantInsts];
 
@@ -602,8 +634,19 @@ function makePattern() {
       const panEff = chance(0.6) ? 3 : ri(0, 2);
       p[o + 8] = ((az >>> 8) << 7) | ((chance(0.5) ? 3 : volEff) << 4) | panEff;
       p[o + 9] = ri(0, 255);
+      // Byte 13: the note's sixteenths (high nibble — a wide cell's pitch is
+      // 65536-TET) on half the cells, sentinels and empty notes included, and
+      // junk in the RESERVED low nibble. Read off bytes already drawn, so the
+      // random stream stays as it was.
+      const fine = denseRepeat && REPEAT_FINE.has(note) ? REPEAT_FINE.get(note)
+        : (p[o + 9] & 0x10) !== 0 ? p[o + 9] & 0x0f : 0;
+      p[o + 13] = (fine << 4) | (p[o + 4] & 0x0f);
       if (denseGlides && (op === 0x10 || op === 0x15) && chance(0.5)) {
         p[o + 10] = 0x1c; w16(p, o + 11, 0xd000 | (ri(1, 3) << 8));
+      } else if (denseRepeat && (p[o + 9] & 0xc0) === 0xc0) {
+        // Glissando on (S $11) on one row in eight and off (S $10) on another
+        // one in eight: it snaps the four pitches to their semitones.
+        p[o + 10] = 0x1c; w16(p, o + 11, (p[o + 9] & 0x20) !== 0 ? 0x1100 : 0x1000 | (p[o + 9] & 0xff));
       } else if (chance(0.3)) {
         if (chance(0.4)) { p[o + 10] = 0xba; w16(p, o + 11, ri(0, 0xffff)); }
         else { const [op2, a2] = pick(EFFECTS); p[o + 10] = op2; w16(p, o + 11, a2()); }
@@ -755,6 +798,91 @@ if (process.env.FUZZ_LYRIC !== "0" && chance(process.env.FUZZ_LYRIC ? 1 : 0.6)) 
   }
   if (chance(0.1)) bytes.push(...[ri(0, 255), 0, ri(1, 255), 0, 0, 0]);   // truncated tail
   sec("ILyr", Uint8Array.from(bytes));
+}
+
+// ── pitch extensions (IPit, file format §9.18) ──
+// Drawn after everything else, so the rest of a seed's song is what it was
+// before them. FUZZ_IPIT=0 leaves them out, FUZZ_IPIT=1 always has them. An
+// entry gives a sample instrument its base fields (sample detune, pitch-pan
+// centre) and its Ixmp patches' ranges and detunes, an OPL instrument its
+// rhythm partner, a formant one its reference note (lyrics included), a
+// layered table or a rack its entries' detunes and ranges. A delta byte is
+// mostly a fraction (the cell's sixteenths meet the ranges' edges), now and
+// then sixteen octaves up or down (a layer or an operator out of a note
+// value's range: voice.pitchExcess). Some guards are wrong, some groups do
+// not fit the instrument (both ignored whole), a later entry for an
+// instrument replaces the earlier, and a reserved flag or a cut-off group
+// ends the read.
+if (process.env.FUZZ_IPIT !== "0" && chance(process.env.FUZZ_IPIT ? 1 : 0.5)) {
+  const crc16 = (crc, bytes) => {
+    for (const x of bytes) {
+      crc ^= x << 8;
+      for (let k = 0; k < 8; k++) crc = ((crc & 0x8000) !== 0 ? (crc << 1) ^ 0x1021 : crc << 1) & 0xffff;
+    }
+    return crc;
+  };
+  const le = (w) => [w & 0xff, (w >>> 8) & 0xff];
+  const word = (b, o) => b[o] | (b[o + 1] << 8);
+  const delta = () => (chance(0.08) ? pick([0x10, 0xf0, 0x10 | ri(0, 15), 0xf0 | ri(0, 15)]) : 0) | (chance(0.85) ? ri(0, 15) : 0);
+  const entry = (id, flags, guard, groups) => {
+    const out = [id & 0xff, flags | ((id >>> 8) & 3), ...le(guard)];
+    return out.concat(...groups);
+  };
+  const bytes = [];
+  const baseOf = (idx, kindWord) => {
+    const b = rec(idx);
+    return { crc: crc16(0xffff, [...le(word(b, 184)), ...le(word(b, 178)), ...le(kindWord)]),
+      group: [delta(), delta(), delta()] };
+  };
+  const targets = [];
+  for (const idx of sampleInsts.slice(0, 12)) if (chance(0.6)) targets.push(idx);
+  for (const idx of [...oplInsts, ...formantInsts]) if (chance(0.5)) targets.push(idx);
+  for (const idx of [30, 31, 32, 33, 40, 41, 42, 43]) if (chance(0.6)) targets.push(idx);
+  for (const idx of targets) {
+    const b = rec(idx);
+    const isTable = (idx >= 30 && idx < 34) || (idx >= 40 && idx < 44);
+    let flags = 0, crc = 0xffff;
+    const groups = [];
+    if (isTable) {
+      // The entries the engine reads: the count byte's, a rack's at most 16,
+      // as many as fit the record.
+      let n = b[1];
+      if (idx >= 40) n = Math.min(n, 16);
+      n = Math.min(n, Math.floor((256 - 4) / 10));
+      const raw = [];
+      for (let k = 0; k < n; k++) raw.push(...b.subarray(4 + k * 10 + 2, 4 + k * 10 + 8));
+      crc = crc16(crc, raw);
+      flags |= 0x08;
+      const tn = chance(0.05) ? n + 1 : n;   // a count that does not fit: ignored
+      const g = [tn];
+      for (let k = 0; k < tn; k++) g.push(delta(), delta(), delta());
+      groups.push(g);
+    } else {
+      const kindWord = oplInsts.includes(idx) ? word(b, 197 + 4) : formantInsts.includes(idx) ? word(b, 197 + 7) : 0;
+      if (!ixmp.some((e) => e.inst === idx) || chance(0.6)) {
+        const base = baseOf(idx, kindWord);
+        crc = base.crc;
+        flags |= 0x04;
+        groups.push(base.group);
+      }
+      const ix = ixmp.find((e) => e.inst === idx);
+      if (ix && chance(0.8)) {
+        for (const [ps, pe, det] of ix.pitch) crc = crc16(crc, [...le(ps), ...le(pe), ...le(det)]);
+        flags |= 0x10;
+        const pn = chance(0.05) ? ix.count + 1 : ix.count;
+        const g = [pn & 0xff, pn >>> 8];
+        for (let k = 0; k < pn; k++) g.push(delta(), delta(), delta());
+        groups.push(g);
+      }
+    }
+    if (flags === 0) continue;
+    if (chance(0.12)) crc ^= 1 << ri(0, 15);   // a stale guard
+    bytes.push(...entry(idx, flags, crc, groups));
+  }
+  if (chance(0.15) && bytes.length) bytes.push(...entry(pick(sampleInsts), 0x04, 0, [[1, 2, 3]]));   // replaces, guard wrong
+  if (chance(0.08)) bytes.push(...entry(pick(sampleInsts), 0x24, 0, [[0, 0, 0]]));   // reserved flag: the read ends
+  if (chance(0.08)) bytes.push(...entry(pick(sampleInsts), 0x10, 0, [[5, 0, 1, 2]]));   // a group cut off
+  sec("IPit", Uint8Array.from(bytes));
 }
 const projHeader = new Uint8Array(16);
 projHeader.set([0x1e, 0x54, 0x61, 0x75, 0x64, 0x50, 0x72, 0x4a]);

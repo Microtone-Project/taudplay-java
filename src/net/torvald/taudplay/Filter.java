@@ -14,10 +14,16 @@ import static net.torvald.taudplay.C.*;
 final class Filter {
     private Filter() {}
 
+    /** The rate a voice's filter runs at: the engine's, or its rack's for an
+     *  FM operator past the first (voice.filterOversample). */
+    private static double filterRate(Engine e, Voice v) {
+        return v.filterOversample > 1 ? (double) e.rate * v.filterOversample : (double) e.rate;
+    }
+
     /** RBJ cookbook low-pass, normalised to a0; SF2 §2.01 p.59 1/√Q gain-norm. */
     private static void sfBiquad(Engine e, Voice v, double fres, double qLin) {
         final double pi = 3.141592653589793;
-        double omega = (2.0 * pi * fres) / e.rate;
+        double omega = (2.0 * pi * fres) / filterRate(e, v);
         double sinC = JsMath.sin(omega);
         double cosC = JsMath.cos(omega);
         double alpha = sinC / (2.0 * qLin);
@@ -55,7 +61,7 @@ final class Filter {
         }
         double hz = v.sfCentsLeft == 0
             ? v.sfHzAim
-            : dmin(dmax(8.176 * JsMath.pow(2.0, v.sfCents / 1200.0), 5.0), 0.45 * e.rate);
+            : dmin(dmax(8.176 * JsMath.pow(2.0, v.sfCents / 1200.0), 5.0), 0.45 * filterRate(e, v));
         sfBiquad(e, v, hz, v.sfQ);
     }
 
@@ -63,7 +69,7 @@ final class Filter {
         final double pi = 3.141592653589793;
         int cut = v.currentCutoff;
         int res = v.currentResonance;
-        double rate = e.rate;
+        double rate = filterRate(e, v);
         double nyquist = rate * 0.5 - 1.0;
         if (cut == v.filterCutoffCached && res == v.filterResonanceCached) return;
         v.filterCutoffCached = cut;

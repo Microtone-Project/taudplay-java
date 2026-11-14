@@ -106,7 +106,7 @@ final class Row {
         if (!(mayCarry && Envelope.envCarry(v.activeVolEnvLoop))) {
             v.envIndex = 0;
             v.envTimeSec = 0.0;
-            v.envVolume = dclamp(v.activeVolEnv[0].value / 63.0, 0.0, 1.0);
+            v.envVolume = dclamp(v.activeVolEnv[0].value / (double) v.activeVolEnvMax, 0.0, 1.0);
         }
         v.hasPanEnv = Envelope.envPresent(v.activePanEnvLoop);
         if (!(mayCarry && Envelope.envCarry(v.activePanEnvLoop))) {
@@ -193,7 +193,10 @@ final class Row {
                 else { effOp = 0; effArg = 0; }
 
                 Cell dittoRow = new Cell();
+                /* The note travels whole: its word and its sixteenths. */
                 dittoRow.note = rawRow.note != 0 ? rawRow.note : src.note;
+                dittoRow.noteFine = rawRow.note != 0 ? rawRow.noteFine : src.noteFine;
+                dittoRow.noteFrac = rawRow.note != 0 ? rawRow.noteFrac : src.noteFrac;
                 dittoRow.instrment = rawRow.instrment != 0 ? rawRow.instrment : src.instrment;
                 dittoRow.volume = volIsSet ? rawRow.volume : src.volume;
                 dittoRow.volumeEff = volIsSet ? rawRow.volumeEff : src.volumeEff;
@@ -237,7 +240,7 @@ final class Row {
 
             /* ── Note ── */
             boolean toneG = row.effect == OP_G || row.effect == OP_L;
-            int note = row.note;
+            double note = row.noteValue();
             int sArg = sDelayArg(e, row);
             int sDelayTick = sArg < 0 ? 0 : (sArg >> 8) & 0xf;
 
@@ -281,17 +284,18 @@ final class Row {
                 /* reserved sentinel range */
             } else if (note >= 0x0010 && note <= 0x001f) {
                 if (sDelayTick > 0) {
-                    deferNote(voice, sDelayTick, note);
+                    deferNote(voice, sDelayTick, (int) note);
                     voice.delayedInterruptArg = interruptArgOf(e, row);
                 } else {
-                    e.pendingInterrupts |= 1 << (note - 0x0010);
-                    e.interruptArgs[note - 0x0010] = interruptArgOf(e, row) & 0xffff;
+                    int k = (int) note - 0x0010;
+                    e.pendingInterrupts |= 1 << k;
+                    e.interruptArgs[k] = interruptArgOf(e, row) & 0xffff;
                 }
             } else {
                 if (toneG && voice.active) {
                     voice.tonePortaTarget = voice.metaForeground && voice.layerFixedNote >= 0
                         ? -1
-                        : iclamp(note + voice.metaForegroundDetune, 0x20, 0xffff);
+                        : dclamp(note + voice.metaForegroundDetune, 0x20, 0xffff);
                     if (row.instrment != 0 && !e.instruments[row.instrment].isMeta()) {
                         boolean mayCarry = !voice.keyOff && !voice.noteFading && row.instrment == voice.instrumentId;
                         voice.instrumentId = row.instrment;

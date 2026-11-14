@@ -90,7 +90,20 @@ final class Engine {
     int mulberry = 1;
 
     /* Tables. */
-    final double[] sincTable = new double[SINC_TABLE_SIZE];
+    /* The sinc kernel (engine spec §8.3): sincTable[i] is the Hann-windowed
+     * sinc at i ÷ SINC_PRECISION samples from the centre, and 0 at the last
+     * entry, where the window ends. sincPhase is the same numbers laid out
+     * for the sampler: row p holds the six coefficients of sub-sample phase
+     * p, for the taps −2…+3. */
+    final double[] sincTable = new double[SINC_TABLE_SIZE + 1];
+    final double[] sincPhase = new double[SINC_PRECISION * SINC_TAPS];
+    /* The FM racks' oversampling factor at this rate, and their low-pass:
+     * b0, b1, b2, a1, a2 of each section (a0 = 1), in the order they run. */
+    int fmOversample;
+    final double[][] fmDec = new double[FM_DEC_SECTIONS][5];
+    /* An unsigned 8-bit sample as the mixer's number, (b − 127.5) / 127.5,
+     * for every b: the division done once. */
+    final double[] pcmU8 = new double[256];
     final Formant.FTables formantTables = new Formant.FTables();
 
     /* Instrument mixing chains (item 217): the project's blocks by id
@@ -98,6 +111,9 @@ final class Engine {
      * rebuilt whenever imixGen moves or the render target changes. */
     final Imix.Block[] imixBlocks = new Imix.Block[256];
     int imixGen, imixSyncedGen;
+    /* The `IPit` entries (§9.18), by instrument slot; null = no section. An
+     * entry is applied to its instrument whenever either is (re)loaded. */
+    PitchExt[] pitchExt;
     Object imixRenderer;
     final Imix.Bus[] imixRoutes = new Imix.Bus[IMX_ROUTE_SLOTS];
     Imix.Bus[] imixList = new Imix.Bus[8];      /* ascending by slot */
@@ -183,8 +199,10 @@ final class Engine {
 
     private static void cellSetByte(Cell c, int o, int b) {
         switch (o) {
-        case 0: c.note = (c.note & 0xff00) | b; break;
-        case 1: c.note = (c.note & 0x00ff) | (b << 8); break;
+        /* The 8-byte cell has no room for a fraction: writing a note byte
+         * drops whatever sixteenths the cell carried. */
+        case 0: c.note = (c.note & 0xff00) | b; c.noteFrac = 0; break;
+        case 1: c.note = (c.note & 0x00ff) | (b << 8); c.noteFrac = 0; break;
         case 2: c.instrment = b; break;
         case 3: c.volume = b & 63; c.volumeEff = (b >> 6) & 3; break;
         case 4: c.pan = b & 63; c.panEff = (b >> 6) & 3; break;
@@ -197,8 +215,10 @@ final class Engine {
 
     private static void cellSetByteWide(Cell c, int o, int b) {
         switch (o) {
-        case 0: c.note = (c.note & 0xff00) | b; break;
-        case 1: c.note = (c.note & 0x00ff) | (b << 8); break;
+        /* The word takes the fine nibble last decoded — none under a
+         * sentinel (§5.5: the nibble is RESERVED there). */
+        case 0: c.note = (c.note & 0xff00) | b; c.noteFrac = c.note >= 0x20 ? c.noteFine : 0; break;
+        case 1: c.note = (c.note & 0x00ff) | (b << 8); c.noteFrac = c.note >= 0x20 ? c.noteFine : 0; break;
         case 2: c.instrment = b; break;
         case 3: c.volume = b & 0xff; break;
         case 4: c.azimuth = (c.azimuth & 0x100) | b; break;
@@ -214,6 +234,10 @@ final class Engine {
         case 10: c.effect2 = b; break;
         case 11: c.effectArg2 = (c.effectArg2 & 0xff00) | b; break;
         case 12: c.effectArg2 = (c.effectArg2 & 0x00ff) | (b << 8); break;
+        case 13: /* low nibble RESERVED */
+            c.noteFine = b >> 4;
+            c.noteFrac = c.note >= 0x20 ? c.noteFine : 0;
+            break;
         default: break;
         }
     }
@@ -229,7 +253,7 @@ final class Engine {
     }
 
     /** The no-op cell's bytes: both column selectors FINE by zero, everything
-     *  else zero (file format §5.5). */
+     *  else zero (file format §5.1). */
     private static boolean isBlankPatternBytes(byte[] bytes, int off, int len, boolean wide) {
         int size = wide ? CELL_BYTES_WIDE : CELL_BYTES;
         if (len < 64 * size) return false;
@@ -348,6 +372,7 @@ final class Engine {
         Patch[] patches = Inst.parsePatchesBlob(bytes, off, len);
         inst.extraPatches = patches;
         inst.patchCount = patches != null ? patches.length : 0;
+        PitchExt.apply(this, inst);
     }
 
     void setCellFormat(boolean wide) {

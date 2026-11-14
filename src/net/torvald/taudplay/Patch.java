@@ -10,6 +10,10 @@ final class Patch {
     /** Its place in the instrument's list (the C's pointer difference). */
     int index;
     int pitchStart, pitchEnd, volumeStart, volumeEnd;
+    /* The pitch extension (§9.18, PitchExt): what the instrument's `IPit`
+     * entry adds to the three 16-bit pitch fields, in 4096-TET units; 0
+     * without one. dHi is added to the EXCLUSIVE end of the range, pitchEnd + 1. */
+    double dLo, dHi, dDetune;
     long samplePtr;
     int sampleLength, playStart, loopStart, loopEnd, samplingRate, sampleDetune;
     int loopMode, defaultPan = 0xff, defaultNoteVolume;

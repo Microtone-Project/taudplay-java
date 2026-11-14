@@ -29,7 +29,11 @@ final class Fm {
         for (int k = 0; k < src.count; k++) {
             dst.gain[k] = src.gain[k];
             dst.last[k] = src.last[k];
+            dst.opGain[k] = src.opGain[k];
+            dst.held[k] = src.held[k];
         }
+        /* …and where the low-pass stands, so the copy carries on mid-wave. */
+        System.arraycopy(src.dec, 0, dst.dec, 0, dst.dec.length);
     }
 
     static void referencedOperators(int[] program, int len, int count, boolean[] used) {
@@ -79,55 +83,74 @@ final class Fm {
         return s;
     }
 
+    /* One operator's value at sub-step `sub` of the `n` its rack takes this
+     * output frame (n = 1: the rack runs at the engine's rate, and this is
+     * the whole of the frame). */
     private static double fmEvalOperator(Engine e, FmRig rig, int k, int interpMode, double spt, double offset,
-                                         long frame) {
+                                         long frame, int sub, int n) {
         if (rig.done[k]) return rig.cur[k];
         rig.done[k] = true;
         Voice v = rig.voices[k];
         if (v == null || !v.active) { rig.cur[k] = 0.0; return 0.0; }
         Inst inst = e.instruments[v.instrumentId];
         double s;
-        if (v.opl != null) {
-            s = fmChipOperator(e, v, frame, offset);
-        } else if (v.psg != null) {
-            s = fmPsgOperator(e, v, frame, offset);
+        if (v.opl != null || v.psg != null) {
+            /* A chip runs on its own clock, a sample of it an output frame:
+             * read on the frame's first sub-step, with the modulation that
+             * sub-step brings, and held for the rest. */
+            if (sub == 0) {
+                rig.held[k] = v.opl != null ? fmChipOperator(e, v, frame, offset) : fmPsgOperator(e, v, frame, offset);
+            }
+            s = rig.held[k];
         } else {
             double frames = offset == 0 ? 0 : offset * fmCycleFrames(v);
-            s = Sampler.fetchTrackerSample(e, v, inst, interpMode, frames);
+            s = n == 1 ? Sampler.fetchTrackerSample(e, v, inst, interpMode, frames)
+                       : Sampler.fetchTrackerSampleSub(e, v, inst, interpMode, frames, n, sub == n - 1);
         }
         double g = rig.gain[k];
         if (k != 0) {
+            /* Its filter runs at the rack's rate (its coefficients are made
+             * for it: voice.filterOversample); everything that shapes its
+             * LEVEL moves once an output frame, on the first sub-step, and
+             * holds. */
             s = Filter.applyVoiceFilterSelf(v, s);
-            Filter.advanceFilterGlide(e, v);
-            v.envVolMix += v.envVolStep;
-            double effEnvVol = v.hasVolEnv && v.volEnvOn ? v.envVolMix : 1.0;
-            Sampler.advanceVolumeRamp(e, v, e.volDiv);
-            Sampler.advancePitchRamp(e, v, spt);
-            g *= effEnvVol * Sampler.advanceFadeout(v) * v.activeAttenGain * (inst.instGlobalVolume / 255.0);
-            if (v.rampOutSamples > 0) {
-                g *= v.rampOutGain;
-                v.rampOutGain -= v.rampOutStep;
-                v.rampOutSamples--;
-                if (v.rampOutSamples == 0) v.active = false;
+            if (sub == 0) {
+                Filter.advanceFilterGlide(e, v);
+                v.envVolMix += v.envVolStep;
+                double effEnvVol = v.hasVolEnv && v.volEnvOn ? v.envVolMix : 1.0;
+                Sampler.advanceVolumeRamp(e, v, e.volDiv);
+                g *= effEnvVol * Sampler.advanceFadeout(v) * v.activeAttenGain * (inst.instGlobalVolume / 255.0);
+                if (v.rampOutSamples > 0) {
+                    g *= v.rampOutGain;
+                    v.rampOutGain -= v.rampOutStep;
+                    v.rampOutSamples--;
+                    if (v.rampOutSamples == 0) v.active = false;
+                }
+                if (v.attackRampSamples > 0) {
+                    int elapsed = e.attackRampSamples - v.attackRampSamples;
+                    g *= 0.5 - 0.5 * JsMath.cos((3.141592653589793 * elapsed) / e.attackRampSamples);
+                    v.attackRampSamples--;
+                }
+                rig.opGain[k] = g;
+            } else {
+                g = rig.opGain[k];
             }
-            if (v.attackRampSamples > 0) {
-                int elapsed = e.attackRampSamples - v.attackRampSamples;
-                g *= 0.5 - 0.5 * JsMath.cos((3.141592653589793 * elapsed) / e.attackRampSamples);
-                v.attackRampSamples--;
-            }
+            /* The rate it reads at moves once a frame too, and AFTER the
+             * frame's last sub-step: every sub-step of a frame steps by the
+             * same rate, as operator 0's do (the mixer moves that one, after
+             * the rack has run). */
+            if (sub == n - 1) Sampler.advancePitchRamp(e, v, spt);
         }
         double out = s * g;
         rig.cur[k] = out;
         return out;
     }
 
-    /** Run the rack's algorithm for one output sample. */
-    static double renderFmVoice(Engine e, Voice voice, int interpMode, double spt, long frame) {
-        FmRig rig = voice.fmRig;
+    /** Run the rack's algorithm once: one sub-step. */
+    private static double runProgram(Engine e, FmRig rig, int interpMode, double spt, long frame, int sub, int n) {
         int[] prog = rig.program;
         double[] stack = rig.stack;
         int sp = 0;
-        if (prog == null) return 0.0;
         java.util.Arrays.fill(rig.done, false);
 
         for (int i = 0; i < rig.programLen; i++) {
@@ -162,11 +185,28 @@ final class Fm {
                 continue;
             }
             double offset = cls == FM_WORD_MOD && sp > 0 ? stack[--sp] : 0.0;
-            if (sp < FM_STACK_MAX) stack[sp++] = fmEvalOperator(e, rig, k, interpMode, spt, offset, frame);
+            if (sp < FM_STACK_MAX) stack[sp++] = fmEvalOperator(e, rig, k, interpMode, spt, offset, frame, sub, n);
         }
 
         for (int k = 0; k < rig.count; k++) if (rig.done[k]) rig.last[k] = rig.cur[k];
         return sp > 0 ? stack[sp - 1] : 0.0;
+    }
+
+    /** The rack's value for one output sample: its algorithm run at the
+     *  rack's own rate — e.fmOversample times the engine's — through the
+     *  low-pass that brings it down, read on the frame's last sub-step (spec
+     *  §5.5.1, "The rack's own rate"). At a factor of 1 the algorithm's value
+     *  IS the sample. */
+    static double renderFmVoice(Engine e, Voice voice, int interpMode, double spt, long frame) {
+        FmRig rig = voice.fmRig;
+        int n = e.fmOversample;
+        double y = 0.0;
+        if (rig.program == null) return 0.0;
+        if (n <= 1) return runProgram(e, rig, interpMode, spt, frame, 0, 1);
+        for (int s = 0; s < n; s++) {
+            y = Tables.fmDecimate(e, rig.dec, runProgram(e, rig, interpMode, spt, frame, s, n));
+        }
+        return y;
     }
 
     /** True when operator 0 is a DSP-ONLY principal (fmPrincipalIsDsp): the
